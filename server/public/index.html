@@ -5010,6 +5010,7 @@
           if (scroller && silent) scroller.scrollTop = keepTop;
           ensureFilesLive();
         } catch (err) {
+          if (err.name === 'AbortError' || !filesRequests.current(ticket)) return;
           if (!silent) console.error('Failed to load session files:', err);
         }
       }
@@ -7209,7 +7210,7 @@
         const c = ensureChatState(t);
         c.bindingError = data.bindingError || '';
         c.bindingToken = data.bindingToken || '';
-        if (data.bindingSource && data.resolvedSessionId) {
+        if ((data.bindingSource || (!data.claudeRunning && data.jsonlPath)) && data.resolvedSessionId) {
           if (c.resolvedSessionId && c.resolvedSessionId !== data.resolvedSessionId) {
             c.previousAttempts = [...(c.previousAttempts || []), ...c.pending];
             c.pending = []; // old attempts stay retained, never acknowledged by the resumed conversation

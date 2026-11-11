@@ -45,6 +45,30 @@ test('actual list refresh never activates a duplicate session or steals focus', 
   assert.equal(c.activeTabId, 'window-A');
 });
 
+test('cancelled file requests are normal and do not produce console errors', async () => {
+  const errors = [], elements = new Map();
+  const c = vm.createContext({ TaktInteractions, AbortController, currentFilesCwd: '', currentFilesNodeId: 'N',
+    filesSig: '', filesPending: false, currentFileTree: [], selectedFilePath: '', previewAbortCtrl: null,
+    getNodeInfo: () => ({ id: 'N' }), toLocalMacPath: x => x,
+    document: { getElementById: id => { if (!elements.has(id)) elements.set(id, {}); return elements.get(id); } },
+    fetch: async () => { throw Object.assign(new Error('cancelled'), { name: 'AbortError' }); },
+    renderFileTree: noop, console: { error: message => errors.push(message) } });
+  vm.runInContext(section('      const filesRequests =', '      // ---- Live file tree'), c);
+  await c.loadSessionFiles('/work/A', 'N'); assert.deepEqual(errors, []);
+});
+
+test('an idle history window uses its resolved conversation title', () => {
+  const t = { tabId: 'W', nodeId: 'N', sessionId: 'S', title: 'stale title' };
+  const chat = { epoch: 'epoch', ver: 1, pending: [], resolvedSessionId: 'S', status: 'idle' };
+  const c = vm.createContext({ ensureChatState: () => chat, activeChatTab: () => null,
+    foldersData: [{ nodeId: 'N', sessions: [{ id: 'S', title: 'Actual history' }] }],
+    cleanSessionTitle: x => x, renderTabBar: noop, claudeLaunchCommand: () => '',
+    mergeDocktermMessages: () => ({ added: [], updated: [] }) });
+  vm.runInContext(section('      function applyDocktermData(', '      async function pollDockterm('), c);
+  c.applyDocktermData(t, { tabId: 'W', epoch: 'epoch', resolvedSessionId: 'S', claudeRunning: false, jsonlPath: '/fixture/S.jsonl' });
+  assert.equal(t.title, 'Actual history');
+});
+
 test('deleting a sidebar conversation never closes a tab by confusing its ID with a session ID', async () => {
   const closed = [];
   const c = vm.createContext({ tabs: new Map([['S', { sessionId: 'T' }]]), sess: { id: 'S', title: 'test' },
