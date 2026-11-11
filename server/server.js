@@ -2,15 +2,15 @@
 /**
  * TAKT AI — Multi-Linux Node SSH Terminal Workbench Server
  * ---------------------------------------------------------------------
- * 1. Multi-Linux Node Registry (/Users/will/.takt-ai/nodes.json):
- *    Each Linux server maps to its own isolated Mac local folder (work, work2, work3...),
+ * 1. Multi-Linux Node Registry ($TAKT_HOME/nodes.json):
+ *    Each Linux server maps to its own isolated local folder (work, work2, work3...),
  *    its own Syncthing folder, and its own dedicated MCP Reverse SSH Tunnel (-R 18765 & -R 49620)
- *    so EVERY Linux server can invoke the Mac's 21 MCP tools (Blender, FreeCAD, 嘉立创EDA, Xcode, Browser).
+ *    so EVERY Linux server can request the local client's MCP tools (macOS or Windows/WSL2).
  * 2. Left Sidebar API: Passively scans all configured Linux servers & local work directories
  *    without touching the `claude` CLI binary, tagging every project and session with its Linux node badge.
  * 3. Center Multi-Tab Terminal WS: Each open conversation tab maps 1:1 to a persistent
  *    SSH + remote `tmux` session on that project's target Linux server.
- * 4. Right Sidebar File Browser & Preview API: Reads 100% from the Mac local filesystem
+ * 4. Right Sidebar File Browser & Preview API: Reads from the local synced filesystem
  *    corresponding to the active project's node (`work`, `work2`, `work3`...).
  */
 
@@ -30,12 +30,21 @@ const queueInteraction = createQueue();
 
 const PORT = cfg.PORT;
 const BASE_TAKT_DIR = cfg.TAKT_HOME;
-const KOREA_WORKSPACE_DIR = cfg.WORKSPACE_LINK_DIR;
-const NODES_FILE = path.join(BASE_TAKT_DIR, 'nodes.json');
-const SESSION_TITLES_FILE = path.join(BASE_TAKT_DIR, 'session-titles.json');
-const WORKBENCH_DB_FILE = path.join(BASE_TAKT_DIR, 'takt-workbench.sqlite');
-const LOCAL_WORK_DIR = path.join(BASE_TAKT_DIR, 'work');
+const WORKSPACE_LINK_DIR = cfg.WORKSPACE_LINK_DIR || path.join(BASE_TAKT_DIR, 'workspace-links');
+const NODES_FILE = cfg.NODES_FILE;
+const SESSION_TITLES_FILE = cfg.SESSION_TITLES_FILE;
+const WORKBENCH_DB_FILE = cfg.DB_FILE;
+const LOCAL_WORK_DIR = cfg.DEFAULT_WORK_DIR;
 const DSH_WEB_LOG = path.join(BASE_TAKT_DIR, 'logs/workbench-web.log');
+const MCP_TOKEN = cfg.getMcpToken();
+const MCP_AUTH_HEADERS = Object.freeze({ Authorization: `Bearer ${MCP_TOKEN}` });
+const HOST_PLATFORM = process.platform === 'darwin'
+  ? 'macos'
+  : process.platform === 'linux'
+      && (Boolean(process.env.WSL_DISTRO_NAME) || os.release().toLowerCase().includes('microsoft'))
+    ? 'wsl2'
+    : process.platform;
+const WINDOWS_POWERSHELL = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 const PUBLIC_DIR = fs.existsSync(path.join(__dirname, 'public', 'index.html'))
   ? path.join(__dirname, 'public')
   : __dirname;
@@ -120,9 +129,9 @@ function ensureNodeLocalDirAndSymlink(node) {
       try { fs.copyFileSync(srcStignore, dstStignore); } catch {}
     }
 
-    // Create convenience symlink in /Users/will/Documents/Korea_Server/<alias>
-    if (KOREA_WORKSPACE_DIR && fs.existsSync(KOREA_WORKSPACE_DIR)) {
-      const linkPath = path.join(KOREA_WORKSPACE_DIR, alias);
+    // Create the optional convenience symlink <workspace-link-dir>/<alias>.
+    if (fs.existsSync(WORKSPACE_LINK_DIR)) {
+      const linkPath = path.join(WORKSPACE_LINK_DIR, alias);
       if (!fs.existsSync(linkPath)) {
         try { fs.symlinkSync(localDir, linkPath); } catch {}
       }
@@ -209,10 +218,7 @@ function discoverSshConfigHosts() {
 
 function getSyncthingApiKey() {
   try {
-    const cfgXml = fs.readFileSync(
-      cfg.findSyncthingConfig(),
-      'utf8'
-    );
+    const cfgXml = fs.readFileSync(cfg.findSyncthingConfig(), 'utf8');
     const m = cfgXml.match(/<apikey>([^<]+)<\/apikey>/);
     return m ? m[1].trim() : null;
   } catch {
@@ -220,49 +226,113 @@ function getSyncthingApiKey() {
   }
 }
 
+async function configureLocalSyncthing(node, logs = []) {
+  const stKey = getSyncthingApiKey();
+  if (!stKey || !node.syncthingFolderId) return '';
+  try {
+    const sysRes = await runCmd('curl', ['-fsS', '--max-time', '2', '-H', `X-API-Key: ${stKey}`, `${cfg.SYNCTHING_URL}/rest/system/status`], 2500);
+    const localDeviceId = sysRes.stdout ? (JSON.parse(sysRes.stdout).myID || '') : '';
+    if (node.syncthingDeviceId) {
+      const devicePayload = {
+        deviceID: node.syncthingDeviceId,
+        name: node.name || node.badge || node.id,
+        addresses: ['dynamic'],
+      };
+      await runCmd('curl', [
+        '-fsS', '-X', 'PUT',
+        '-H', `X-API-Key: ${stKey}`,
+        '-H', 'Content-Type: application/json',
+        '-d', JSON.stringify(devicePayload),
+        `${cfg.SYNCTHING_URL}/rest/config/devices/${encodeURIComponent(node.syncthingDeviceId)}`,
+      ], 3000);
+    }
+    const folderPayload = {
+      id: node.syncthingFolderId,
+      label: `TAKT ${node.localWorkAlias} (${node.name})`,
+      filesystemType: 'basic',
+      path: node.localWorkDir,
+      type: 'sendreceive',
+      fsWatcherEnabled: true,
+      fsWatcherDelayS: 1,
+      rescanIntervalS: 60,
+    };
+    if (node.syncthingDeviceId) {
+      folderPayload.devices = localDeviceId
+        ? [{ deviceID: localDeviceId }, { deviceID: node.syncthingDeviceId }]
+        : [{ deviceID: node.syncthingDeviceId }];
+    }
+    const folderRes = await runCmd('curl', [
+      '-fsS', '-X', 'PUT',
+      '-H', `X-API-Key: ${stKey}`,
+      '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify(folderPayload),
+      `${cfg.SYNCTHING_URL}/rest/config/folders/${encodeURIComponent(node.syncthingFolderId)}`,
+    ], 3000);
+    if (folderRes.exitCode === 0) logs.push(`本机 Syncthing 同步目录已注册 (${node.syncthingFolderId})`);
+    return localDeviceId;
+  } catch {
+    return '';
+  }
+}
+
+function powerShellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+async function runWindowsPowerShell(script, timeoutMs = 8000) {
+  if (HOST_PLATFORM !== 'wsl2') {
+    return { exitCode: -1, stdout: '', stderr: 'Windows PowerShell is only available under WSL2.' };
+  }
+  const executable = fs.existsSync(WINDOWS_POWERSHELL) ? WINDOWS_POWERSHELL : 'powershell.exe';
+  const preamble = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding`;
+  const encoded = Buffer.from(`${preamble}\n${script}`, 'utf16le').toString('base64');
+  return runCmd(executable, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-EncodedCommand', encoded,
+  ], timeoutMs);
+}
+
+async function toWindowsPath(inputPath) {
+  const result = await runCmd('wslpath', ['-w', inputPath], 5000);
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    throw new Error('Unable to map the local WSL path to Windows.');
+  }
+  return result.stdout.trim();
+}
+
+async function openLocalTarget(target, mode) {
+  if (HOST_PLATFORM === 'macos') {
+    const how = macOpenArgs(target, mode === 'reveal');
+    return runCmd('open', how.args, 8000);
+  }
+  if (HOST_PLATFORM === 'wsl2') {
+    const windowsPath = await toWindowsPath(target);
+    if (mode === 'reveal') {
+      return runWindowsPowerShell(`Start-Process -FilePath 'explorer.exe' -ArgumentList @('/select,', ${powerShellLiteral(windowsPath)})`, 8000);
+    }
+    if (mode === 'text') {
+      return runWindowsPowerShell(`Start-Process -FilePath 'notepad.exe' -ArgumentList @(${powerShellLiteral(windowsPath)})`, 8000);
+    }
+    return runWindowsPowerShell(`Start-Process -FilePath ${powerShellLiteral(windowsPath)}`, 8000);
+  }
+  return runCmd('xdg-open', [target], 8000);
+}
+
 // Automatically provision a Linux node:
-// 1. Ensure local workN folder + Syncthing folder registration on Mac
-// 2. Establish isolated Reverse SSH Tunnel (-R 18765 & -R 49620) to the Linux host
-// 3. Configure remote ~/.claude.json to point `mac-industrial-mcp` to http://127.0.0.1:18765/mcp?node=<nodeId>
+// 1. Ensure local workN folder + Syncthing folder registration
+// 2. Establish isolated reverse SSH tunnels to the Linux host
+// 3. Configure remote ~/.claude.json to point `mac-industrial-mcp` to the local MCP port
 // 4. Auto-pair Syncthing device & folder if Syncthing is installed on the remote Linux host
 async function provisionLinuxNode(node) {
   ensureNodeLocalDirAndSymlink(node);
   const logs = [`本地目录已就绪: ${node.localWorkDir}`];
-
-  // Register local folder in Mac Syncthing if API key available
-  const stKey = getSyncthingApiKey();
-  let macDeviceId = '';
-  if (stKey && node.syncthingFolderId) {
-    try {
-      const sysRes = await runCmd('curl', ['-s', '--max-time', '2', '-H', `X-API-Key: ${stKey}`, 'http://127.0.0.1:8384/rest/system/status'], 2500);
-      if (sysRes.stdout) {
-        macDeviceId = JSON.parse(sysRes.stdout).myID || '';
-      }
-      const folderPayload = {
-        id: node.syncthingFolderId,
-        label: `TAKT ${node.localWorkAlias} (${node.name})`,
-        filesystemType: 'basic',
-        path: node.localWorkDir,
-        type: 'sendreceive',
-        fsWatcherEnabled: true,
-        fsWatcherDelayS: 1,
-        rescanIntervalS: 60,
-      };
-      if (node.syncthingDeviceId) {
-        folderPayload.devices = macDeviceId
-          ? [{ deviceID: macDeviceId }, { deviceID: node.syncthingDeviceId }]
-          : [{ deviceID: node.syncthingDeviceId }];
-      }
-      await runCmd('curl', [
-        '-s', '-X', 'PUT',
-        '-H', `X-API-Key: ${stKey}`,
-        '-H', 'Content-Type: application/json',
-        '-d', JSON.stringify(folderPayload),
-        `http://127.0.0.1:8384/rest/config/folders/${encodeURIComponent(node.syncthingFolderId)}`,
-      ], 3000);
-      logs.push(`Mac Syncthing 同步目录已注册 (${node.syncthingFolderId})`);
-    } catch {}
-  }
+  const localSyncthingDeviceId = await configureLocalSyncthing(node, logs);
 
   if (!node.sshHost) {
     return { ok: true, logs };
@@ -287,17 +357,22 @@ async function provisionLinuxNode(node) {
   ], 7000);
 
   if (tunRes.exitCode === 0) {
-    logs.push(`SSH 逆向 MCP 隧道已建立 (${node.sshHost} -> 127.0.0.1:18765)`);
+    logs.push(`SSH 逆向 MCP 隧道已建立 (${node.sshHost} -> 127.0.0.1:${cfg.MCP_PORT})`);
   }
 
   // Provision remote work directory + ~/.claude.json MCP entry + read remote Syncthing Device ID
   const remoteWork = node.remoteWorkDir || '/root/work';
   const mcpUrl = `http://127.0.0.1:${cfg.MCP_PORT}/mcp?node=${encodeURIComponent(node.id)}`;
+  const autoAllowHostExec = process.env.TAKT_AUTO_ALLOW_HOST_EXEC === '1';
   const setupPy = `
 import json, os, subprocess
 
 work_dir = ${JSON.stringify(remoteWork)}
 mcp_url = ${JSON.stringify(mcpUrl)}
+mcp_token = ${JSON.stringify(MCP_TOKEN)}
+local_st_id = ${JSON.stringify(localSyncthingDeviceId)}
+folder_id = ${JSON.stringify(node.syncthingFolderId || '')}
+auto_allow_host_exec = ${autoAllowHostExec ? 'True' : 'False'}
 try:
     os.makedirs(work_dir, exist_ok=True)
 except Exception:
@@ -330,7 +405,7 @@ else:
     cfg["mcpServers"]["mac-industrial"] = {
         "type": "http",
         "url": mcp_url,
-        "headers": {"Authorization": "Bearer " + ${JSON.stringify(cfg.getMcpToken())}}
+        "headers": {"Authorization": "Bearer " + mcp_token}
     }
 
 if os.path.exists("/usr/local/bin/instabox-computer-use"):
@@ -357,9 +432,31 @@ if os.path.exists(settings_path):
         st_cfg = {}
 perms = st_cfg.setdefault("permissions", {})
 allow_list = perms.setdefault("allow", [])
-for rule in ("mcp__mac-industrial", "mcp__mac-industrial__*", "mcp__mac-industrial__mac_host_exec"):
-    if rule not in allow_list:
+ask_list = perms.setdefault("ask", [])
+sensitive_tools = (
+    "blender_run_python", "blender_render_image", "blender_open_gui",
+    "freecad_run_python", "freecad_inspect_step", "freecad_open_gui",
+    "jlceda_bridge_status", "jlceda_bridge_execute", "jlceda_inspect_epro",
+    "jlceda_modify_epro", "jlceda_generate_extension_script", "jlceda_open_gui",
+    "mac_browser_fetch", "mac_browser_chrome_extract", "mac_browser_open_url",
+    "xcode_list_devices", "xcode_build_and_deploy_iphone",
+    "usb_list_devices_and_ports", "usb_serial_monitor", "hardware_flash_firmware",
+    "mac_screen_capture", "mac_host_exec",
+)
+managed_rules = {
+    "mcp__mac-industrial", "mcp__mac-industrial__*",
+    "mcp__mac-industrial__work_sync_status",
+    *("mcp__mac-industrial__" + name for name in sensitive_tools),
+}
+allow_list[:] = [rule for rule in allow_list if rule not in managed_rules]
+ask_list[:] = [rule for rule in ask_list if rule not in managed_rules]
+allow_list.append("mcp__mac-industrial__work_sync_status")
+for name in sensitive_tools:
+    rule = "mcp__mac-industrial__" + name
+    if name == "mac_host_exec" and auto_allow_host_exec:
         allow_list.append(rule)
+    else:
+        ask_list.append(rule)
 try:
     with open(settings_path, "w", encoding="utf-8") as f:
         json.dump(st_cfg, f, indent=2, ensure_ascii=False)
@@ -367,6 +464,7 @@ except Exception:
     pass
 
 st_id = ""
+st_paired = False
 try:
     r = subprocess.run(["syncthing", "--device-id"], capture_output=True, text=True, timeout=2)
     if r.returncode == 0 and r.stdout.strip():
@@ -374,7 +472,28 @@ try:
 except Exception:
     pass
 
-print(json.dumps({"ok": True, "workDir": work_dir, "mcpUrl": mcp_url, "syncthingDeviceId": st_id}))
+if st_id and local_st_id and folder_id:
+    try:
+        def st_cli(*args):
+            result = subprocess.run(["syncthing", "cli", "config", *args], capture_output=True, text=True, timeout=8)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "syncthing cli failed")
+            return result
+        devices = st_cli("devices", "list").stdout.splitlines()
+        if local_st_id not in devices:
+            st_cli("devices", "add", "--device-id", local_st_id, "--name", "TAKT local client")
+        folders = st_cli("folders", "list").stdout.splitlines()
+        if folder_id not in folders:
+            st_cli("folders", "add", "--id", folder_id, "--label", "TAKT work", "--path", work_dir,
+                   "--type", "sendreceive", "--rescan-intervals", "60", "--fswatcher-enabled")
+        peers = st_cli("folders", folder_id, "devices", "list").stdout.splitlines()
+        if local_st_id not in peers:
+            st_cli("folders", folder_id, "devices", "add", "--device-id", local_st_id)
+        st_paired = True
+    except Exception:
+        pass
+
+print(json.dumps({"ok": True, "workDir": work_dir, "mcpUrl": mcp_url, "syncthingDeviceId": st_id, "syncthingPaired": st_paired}))
 `.trim();
 
   const b64 = Buffer.from(setupPy, 'utf8').toString('base64');
@@ -391,20 +510,22 @@ print(json.dumps({"ok": True, "workDir": work_dir, "mcpUrl": mcp_url, "syncthing
       if (info.workDir && info.workDir !== node.remoteWorkDir) {
         node.remoteWorkDir = info.workDir;
       }
-      logs.push(`远端目录 ${info.workDir} 与 Mac MCP 桥接已自动注入 ~/.claude.json`);
+      logs.push(`远端目录 ${info.workDir} 与本机 MCP 桥接已自动注入 ~/.claude.json`);
       if (info.syncthingDeviceId && !node.syncthingDeviceId) {
         node.syncthingDeviceId = info.syncthingDeviceId;
         logs.push(`检测到远端 Syncthing Device ID: ${info.syncthingDeviceId.slice(0, 15)}...`);
       }
+      if (info.syncthingPaired) logs.push(`远端 Syncthing 已配对 (${node.syncthingFolderId})`);
+      if (node.syncthingDeviceId) await configureLocalSyncthing(node, logs);
     } catch {}
   }
 
   return { ok: true, logs };
 }
 
-// Ensure Mac Industrial MCP Daemon (:18765) stays running in background
+// Ensure the local MCP daemon stays running in the background.
 let mcpSupervisorBusy = false;
-async function ensureMacMcpDaemonRunning() {
+async function ensureLocalMcpDaemonRunning() {
   if (cfg.MANAGED_SERVICES) return;
   if (mcpSupervisorBusy) return;
   mcpSupervisorBusy = true;
@@ -413,12 +534,18 @@ async function ensureMacMcpDaemonRunning() {
     const timer = setTimeout(() => ctrl.abort(), 1800);
     let ok = false;
     try {
-      const res = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-status`, { signal: ctrl.signal });
+      const res = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-status`, {
+        signal: ctrl.signal,
+        headers: MCP_AUTH_HEADERS,
+      });
       if (res.ok) {
         const st = await res.json();
         ok = true;
         if (st && st.mcpStatus && !st.mcpStatus.remoteTunnelOk && !st.healing) {
-          fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, { method: 'POST' }).catch(() => {});
+          fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, {
+            method: 'POST',
+            headers: MCP_AUTH_HEADERS,
+          }).catch(() => {});
         }
       }
     } catch {}
@@ -438,9 +565,9 @@ async function ensureMacMcpDaemonRunning() {
 }
 
 setInterval(() => {
-  ensureMacMcpDaemonRunning().catch(() => {});
+  ensureLocalMcpDaemonRunning().catch(() => {});
 }, 5000);
-ensureMacMcpDaemonRunning().catch(() => {});
+ensureLocalMcpDaemonRunning().catch(() => {});
 
 // ============================================================================
 // 1. Passive Multi-Node Project & Session Scanner (NEVER touches `claude` CLI)
@@ -593,7 +720,7 @@ print(json.dumps({"ok": True, "resolvedWorkRoot": work_root, "folders": res}))
 }
 
 // ============================================================================
-// 1b. Mac Local SQLite State Store (/Users/will/.takt-ai/takt-workbench.sqlite)
+// 1b. Local SQLite state store ($TAKT_HOME/takt-workbench.sqlite)
 //     Maintains projects & sessions locally so UI never flickers or loses items
 //     when SSH polls time out or are in-flight.
 // ============================================================================
@@ -817,7 +944,7 @@ async function syncSingleNodeToSqlite(node, customTitles) {
   ensureNodeLocalDirAndSymlink(node);
   const remoteRoot = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
 
-  // 1. Always index Mac local subdirectories into SQLite immediately
+  // 1. Always index local mirror subdirectories into SQLite immediately
   upsertProjectInSqlite(node, remoteRoot, `${node.localWorkAlias} (主工作区)`, 0);
   try {
     const entries = await fsp.readdir(node.localWorkDir, { withFileTypes: true });
@@ -1163,7 +1290,7 @@ function closePtyTab(tabId, explicitNodeId) {
   const tab = activePtyTabs.get(tabId);
   if (!tab || (explicitNodeId && tab.nodeId !== explicitNodeId)) return false;
   const node = getNodeById(explicitNodeId || (tab && tab.nodeId));
-  const targetHost = (tab && tab.sshHost) || (node && node.sshHost) || 'korea-claude';
+  const targetHost = (tab && tab.sshHost) || (node && node.sshHost) || '';
   const tmuxSess = sanitizeTmuxSessionId(tabId);
   docktermTabs.delete(`${targetHost}::${tmuxSess}`);
   if (targetHost) {
@@ -1188,7 +1315,7 @@ function closePtyTab(tabId, explicitNodeId) {
 }
 
 // ============================================================================
-// 3. Multi-Node Session File Browser & Preview Helpers (Mac Local Path Priority)
+// 3. Multi-node session file browser and preview helpers (local mirror priority)
 // ============================================================================
 function inferNodeFromPathOrId(inputPath = '', nodeId = '') {
   const nodes = loadNodes();
@@ -1199,7 +1326,7 @@ function inferNodeFromPathOrId(inputPath = '', nodeId = '') {
     if (n.localWorkDir && (raw === n.localWorkDir || raw.startsWith(n.localWorkDir + '/'))) {
       return n;
     }
-    const docAliasDir = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, n.localWorkAlias || 'work');
+    const docAliasDir = path.join(WORKSPACE_LINK_DIR, n.localWorkAlias || 'work');
     if (raw === docAliasDir || raw.startsWith(docAliasDir + '/')) {
       return n;
     }
@@ -1215,7 +1342,7 @@ function mapRemoteCwdToLocal(remoteCwd = '/root/work', nodeId = '') {
   const node = inferNodeFromPathOrId(remoteCwd, nodeId);
   const localBase = node.localWorkDir || LOCAL_WORK_DIR;
   const remoteBase = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
-  const docAliasBase = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, node.localWorkAlias || 'work');
+  const docAliasBase = path.join(WORKSPACE_LINK_DIR, node.localWorkAlias || 'work');
 
   const clean = String(remoteCwd || remoteBase).trim().replace(/\/+$/, '') || remoteBase;
   if (clean === localBase || clean === remoteBase || clean === docAliasBase) {
@@ -1257,7 +1384,7 @@ function cwdMapsToLocal(cwd, node) {
   if (!clean || !clean.startsWith('/')) return true;
   const localBase = node.localWorkDir || LOCAL_WORK_DIR;
   const remoteBase = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
-  const docAliasBase = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, node.localWorkAlias || 'work');
+  const docAliasBase = path.join(WORKSPACE_LINK_DIR, node.localWorkAlias || 'work');
   return [localBase, remoteBase, docAliasBase, '/root/work'].some((b) => clean === b || clean.startsWith(`${b}/`));
 }
 
@@ -1274,7 +1401,7 @@ function resolveAnyFilePathToLocalAndRemote(inputPath, sessionCwd = '/root/work'
   const node = inferNodeFromPathOrId(raw || sessionCwd, nodeId);
   const localBase = node.localWorkDir || LOCAL_WORK_DIR;
   const remoteBase = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
-  const docAliasBase = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, node.localWorkAlias || 'work');
+  const docAliasBase = path.join(WORKSPACE_LINK_DIR, node.localWorkAlias || 'work');
 
   let remotePath = '';
   let localPath = '';
@@ -1295,7 +1422,7 @@ function resolveAnyFilePathToLocalAndRemote(inputPath, sessionCwd = '/root/work'
     const rel = raw.slice('/root/work'.length).replace(/^\/+/, '');
     localPath = path.resolve(localBase, rel);
     remotePath = rel ? `${remoteBase}/${rel}` : remoteBase;
-  } else if (raw.startsWith(os.homedir() + '/')) {
+  } else if (process.platform === 'darwin' && raw.startsWith(`${os.homedir()}/`)) {
     localPath = path.resolve(raw);
     remotePath = localPath;
   } else if (raw.startsWith('/')) {
@@ -1470,7 +1597,10 @@ async function getCombinedSystemStatus() {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 2000);
-    const res = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-status`, { signal: ctrl.signal });
+    const res = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-status`, {
+      signal: ctrl.signal,
+      headers: MCP_AUTH_HEADERS,
+    });
     clearTimeout(timer);
     if (res.ok) {
       mcpData = await res.json();
@@ -1491,6 +1621,18 @@ async function getCombinedSystemStatus() {
     if (candidate) {
       localTailscaleOk = true;
       localTailscaleIp = candidate;
+    } else if (HOST_PLATFORM === 'wsl2') {
+      const winTs = await runWindowsPowerShell(`
+$candidate = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Where-Object { $_.IPAddress -match '^100\\.' -and $_.InterfaceAlias -match 'Tailscale' } |
+  Select-Object -ExpandProperty IPAddress -First 1
+if ($candidate) { [Console]::Out.Write($candidate) }
+`, 3000);
+      const winCandidate = (winTs.stdout || '').trim();
+      if (/^100\.\d+\.\d+\.\d+$/.test(winCandidate)) {
+        localTailscaleOk = true;
+        localTailscaleIp = winCandidate;
+      }
     } else {
       const ifRes = await runCmd('/sbin/ifconfig', [], 1500);
       const m = (ifRes.stdout || '').match(/inet\s+(100\.\d+\.\d+\.\d+)\s+-->/);
@@ -2807,8 +2949,8 @@ async function fetchDocktermHistory({ tabId, sessionId, nodeId, sshHost, epoch: 
 }
 
 // ============================================================================
-// 4C. Local copies on the Mac: remote files, inline chat images, Claude usage/models
-//     Everything the UI previews or opens is read from the Mac's disk. Files outside the
+// 4C. Local client copies: remote files, inline chat images, Claude usage/models
+//     Everything the UI previews or opens is read from the local disk. Files outside the
 //     Syncthing mirror (or not synced yet) are copied once over SSH into a local cache.
 // ============================================================================
 const TAKT_CACHE_DIR = path.join(BASE_TAKT_DIR, 'cache');
@@ -2830,10 +2972,13 @@ function formatByteSize(n) {
   return `${(v / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-// Paths that already live on this Mac (never fetched from a node)
-function isLocalMacPath(p) {
+// Paths that already live on this machine (never fetched from a node).
+function isLocalClientPath(p) {
   const s = String(p || '');
-  return s.startsWith('/Users/') || s === BASE_TAKT_DIR || s.startsWith(`${BASE_TAKT_DIR}/`) || (KOREA_WORKSPACE_DIR && s.startsWith(`${KOREA_WORKSPACE_DIR}/`));
+  return (process.platform === 'darwin' && s.startsWith('/Users/'))
+    || s === BASE_TAKT_DIR
+    || s.startsWith(`${BASE_TAKT_DIR}/`)
+    || s.startsWith(`${WORKSPACE_LINK_DIR}/`);
 }
 
 function remoteShellPath(p) {
@@ -2907,11 +3052,11 @@ async function pruneTaktCache() {
 const remoteFileInflight = new Map();
 const remoteFileMisses = new Map(); // short negative cache: a gallery of missing paths must not hammer SSH
 
-/** Copy a node file into the Mac cache (re-used while size + mtime are unchanged). */
+/** Copy a node file into the local cache (re-used while size + mtime are unchanged). */
 async function ensureRemoteFileCopy(node, remotePath, maxBytes = REMOTE_PREVIEW_MAX_BYTES) {
   const rp = String(remotePath || '');
-  if (!node || !node.sshHost || !(rp.startsWith('/') || rp.startsWith('~/')) || isLocalMacPath(rp)) {
-    return { ok: false, error: 'Mac 本地没有这个文件，也没有可读取它的远端节点' };
+  if (!node || !node.sshHost || !(rp.startsWith('/') || rp.startsWith('~/')) || isLocalClientPath(rp)) {
+    return { ok: false, error: '本机没有这个文件，也没有可读取它的远端节点' };
   }
   const key = `${node.id}::${rp}`;
   const miss = remoteFileMisses.get(key);
@@ -2922,7 +3067,7 @@ async function ensureRemoteFileCopy(node, remotePath, maxBytes = REMOTE_PREVIEW_
     const q = remoteShellPath(rp);
     const st = await runCmd('ssh', [...DOCKTERM_SSH_OPTS, node.sshHost, `stat -L -c '%s %Y %F' -- ${q}`], 8000);
     const m = (st.stdout.trim().split('\n').pop() || '').match(/^(\d+) (\d+) (.+)$/);
-    if (st.exitCode !== 0 || !m) return { ok: false, error: `Mac 本地和节点 ${node.badge || node.id} 上都没有找到这个文件`, missing: true };
+    if (st.exitCode !== 0 || !m) return { ok: false, error: `本机和节点 ${node.badge || node.id} 上都没有找到这个文件`, missing: true };
     const size = Number(m[1]);
     const mtime = Number(m[2]);
     if (!/regular/.test(m[3])) {
@@ -2966,7 +3111,7 @@ async function ensureRemoteFileCopy(node, remotePath, maxBytes = REMOTE_PREVIEW_
   return job;
 }
 
-/** Resolve a path from the conversation to something readable on this Mac. */
+/** Resolve a path from the conversation to something readable on this local client. */
 async function resolveReadableLocalFile(reqPath, cwd, nodeId, maxBytes = REMOTE_PREVIEW_MAX_BYTES) {
   const r = resolveAnyFilePathToLocalAndRemote(reqPath, cwd, nodeId);
   if (r.localPath) {
@@ -3360,7 +3505,10 @@ const server = http.createServer(async (req, res) => {
       const prov = await provisionLinuxNode(target);
       saveNodes(nodes);
       syncAllNodesToSqlite().catch(() => {});
-      fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, { method: 'POST' }).catch(() => {});
+      fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, {
+        method: 'POST',
+        headers: MCP_AUTH_HEADERS,
+      }).catch(() => {});
       sendJson(res, 200, { ok: true, node: target, nodes, logs: prov.logs });
       return;
     }
@@ -3378,12 +3526,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Instabox Remote Desktop Plugin (noVNC Web + macOS Native Screen Sharing + AI/Human Control)
+    // API: Instabox remote desktop (noVNC web + optional host VNC client + AI/human control)
     if (u.pathname === '/api/remote-desktop' && (req.method === 'GET' || req.method === 'POST')) {
       const body = req.method === 'POST' ? await readJsonBody(req) : {};
       const r = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/remote-desktop`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...MCP_AUTH_HEADERS, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: body.action || u.searchParams.get('action') || 'start',
           nodeId: body.nodeId || u.searchParams.get('nodeId') || 'linux-work4',
@@ -3394,7 +3542,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Create a new project folder on the specified Linux node & its paired Mac local workN folder
+    // API: Create a project on the Linux node and in its paired local workN mirror.
     if (req.method === 'POST' && u.pathname === '/api/projects') {
       const body = await readJsonBody(req);
       const rawName = String(body.name || '').trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5. ]/g, '').trim();
@@ -3512,7 +3660,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: List files for a session's project directory (Mac Local Disk for that node's work/work2)
+    // API: List files from the node's local work/work2 mirror.
     if (req.method === 'GET' && u.pathname === '/api/files') {
       const cwd = String(u.searchParams.get('cwd') || '/root/work').trim();
       const nodeId = String(u.searchParams.get('nodeId') || '').trim();
@@ -3523,7 +3671,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Read text/code file content for Right Panel Preview (100% Mac Local Path + Strict Whitelist + Fast Size Guard)
+    // API: Read preview content from the local mirror with a strict whitelist and size guard.
     if (req.method === 'GET' && u.pathname === '/api/file-content') {
       const reqPath = String(u.searchParams.get('path') || '').trim();
       const cwd = String(u.searchParams.get('cwd') || '/root/work').trim();
@@ -3564,7 +3712,7 @@ const server = http.createServer(async (req, res) => {
       if (localPath && fs.existsSync(localPath)) {
         try { localStat = await fsp.stat(localPath); } catch {}
       }
-      // Not on this Mac (outside the mirror / not synced yet): copy it from the node first
+      // Not in the local mirror yet: copy it from the node first.
       if (!localStat && (isImage || isWeb || isCode)) {
         const copy = await ensureRemoteFileCopy(node, remotePath, isImage ? MAX_IMAGE_BYTES : isWeb ? MAX_WEB_BYTES : MAX_CODE_BYTES);
         if (copy.ok) {
@@ -3588,7 +3736,7 @@ const server = http.createServer(async (req, res) => {
             reason: copy.error,
           });
           return;
-        } else if (remotePath && !isLocalMacPath(remotePath)) {
+        } else if (remotePath && !isLocalClientPath(remotePath)) {
           sendJson(res, 404, { ok: false, error: copy.error || `没有找到该文件: ${displayPath}` });
           return;
         }
@@ -3616,7 +3764,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (!localStat) {
-        sendJson(res, 404, { ok: false, error: `Mac 本地路径下未找到该文件: ${displayPath}` });
+        sendJson(res, 404, { ok: false, error: `本机路径下未找到该文件: ${displayPath}` });
         return;
       }
 
@@ -3738,7 +3886,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Stream raw file directly from Mac local disk
+    // API: Stream a raw file from the local mirror/cache.
     if (req.method === 'GET' && u.pathname === '/api/raw-file') {
       const reqPath = String(u.searchParams.get('path') || '').trim();
       const cwd = String(u.searchParams.get('cwd') || '/root/work').trim();
@@ -3765,7 +3913,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: image pasted into a Claude conversation (cached on the Mac after the first view)
+    // API: Image pasted into a Claude conversation (cached locally after the first view).
     if (req.method === 'GET' && u.pathname === '/api/chat-image') {
       const r = await ensureChatImageCopy({
         nodeId: u.searchParams.get('nodeId') || '',
@@ -3788,7 +3936,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: open a file from the conversation with its Mac app (or reveal it in Finder)
+    // API: open a file from the conversation with a local app (or reveal it in the file manager)
     if (req.method === 'POST' && u.pathname === '/api/open-local') {
       const body = await readJsonBody(req);
       let target = '';
@@ -3811,13 +3959,13 @@ const server = http.createServer(async (req, res) => {
         fromRemote = r.fromRemote;
       }
       const how = macOpenArgs(target, Boolean(body.reveal));
-      const r = await runCmd('open', how.args, 8000);
+      const r = await openLocalTarget(target, how.mode);
       sendJson(res, r.exitCode === 0 ? 200 : 500, {
         ok: r.exitCode === 0,
-        target,
         mode: how.mode,
+        platform: HOST_PLATFORM,
         fromRemote,
-        error: r.exitCode === 0 ? undefined : (r.stderr.trim() || 'open 失败'),
+        error: r.exitCode === 0 ? undefined : '无法使用本机应用打开该文件',
       });
       return;
     }
@@ -3837,7 +3985,11 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 413, { ok: false, error: size ? `文件超过 ${formatByteSize(CHAT_UPLOAD_MAX_BYTES)}` : '空文件' });
         return;
       }
-      const r = await uploadChatAttachment(node, cwd, u.searchParams.get('name') || 'file', req, size);
+      // The file tree is rendered from the local synced copy, so older clients may send its
+      // local absolute path as cwd. Claude runs on the SSH node and must only receive a path
+      // in that node's filesystem.
+      const uploadCwd = cwdMapsToLocal(cwd, node) ? mapAnyCwdToRemote(cwd, node.id) : cwd;
+      const r = await uploadChatAttachment(node, uploadCwd, u.searchParams.get('name') || 'file', req, size);
       sendJson(res, r.ok ? 200 : 500, r);
       return;
     }
@@ -3854,14 +4006,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Reveal in macOS Finder
+    // API: Reveal in the local file manager (Finder, Explorer or xdg-open)
     if (req.method === 'POST' && u.pathname === '/api/open-finder') {
       const body = await readJsonBody(req);
       const { localPath, node } = resolveAnyFilePathToLocalAndRemote(body.path || '', body.cwd || '', body.nodeId || '');
       const fallbackDir = (node && node.localWorkDir) || LOCAL_WORK_DIR;
       const target = (localPath && fs.existsSync(localPath)) ? localPath : fallbackDir;
-      await runCmd('open', ['-R', target], 3000);
-      sendJson(res, 200, { ok: true, target });
+      const opened = await openLocalTarget(target, 'reveal');
+      sendJson(res, opened.exitCode === 0 ? 200 : 500, {
+        ok: opened.exitCode === 0,
+        platform: HOST_PLATFORM,
+        error: opened.exitCode === 0 ? undefined : '无法在本机文件管理器中显示该文件',
+      });
       return;
     }
 
@@ -3926,21 +4082,39 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Pop out active session in macOS native Terminal.app (attached to the same remote tmux session & Linux host)
+    // API: Pop out the active session in the host terminal, attached to the same remote tmux session.
     if (req.method === 'POST' && u.pathname === '/api/open-system-terminal') {
       const body = await readJsonBody(req);
       const tabId = String(body.tabId || 'default').trim();
       const cwd = String(body.cwd || '/root/work').trim();
       const node = getNodeById(body.nodeId || body.sshHost);
-      const sshHost = String(body.sshHost || node.sshHost || 'korea-claude').trim();
+      const sshHost = String(body.sshHost || node.sshHost || '').trim();
       const launcherScript = path.join(__dirname, 'native-ssh-session.sh');
-      const cmdStr = `/bin/bash ${shSingleQuote(launcherScript)} ${shSingleQuote(tabId)} ${shSingleQuote(cwd)} ${shSingleQuote(sshHost)}`;
-      const osa = `tell application "Terminal"
-        activate
-        do script ${JSON.stringify(cmdStr)}
-      end tell`;
-      await runCmd('osascript', ['-e', osa], 4000);
-      sendJson(res, 200, { ok: true });
+      let opened;
+      if (HOST_PLATFORM === 'macos') {
+        const cmdStr = `/bin/bash ${shSingleQuote(launcherScript)} ${shSingleQuote(tabId)} ${shSingleQuote(cwd)} ${shSingleQuote(sshHost)}`;
+        const osa = `tell application "Terminal"
+          activate
+          do script ${JSON.stringify(cmdStr)}
+        end tell`;
+        opened = await runCmd('osascript', ['-e', osa], 4000);
+      } else if (HOST_PLATFORM === 'wsl2') {
+        const distro = process.env.WSL_DISTRO_NAME || 'Ubuntu';
+        const linuxUser = os.userInfo().username;
+        const wslArgs = ['wsl.exe', '-d', distro, '-u', linuxUser, '--', '/bin/bash', launcherScript, tabId, cwd, sshHost];
+        opened = await runCmd('wt.exe', wslArgs, 5000);
+        if (opened.exitCode === -1) {
+          const psArgs = wslArgs.slice(1).map(powerShellLiteral).join(', ');
+          opened = await runWindowsPowerShell(`Start-Process -FilePath 'wsl.exe' -ArgumentList @(${psArgs})`, 5000);
+        }
+      } else {
+        opened = { exitCode: -1, stderr: 'Unsupported local platform' };
+      }
+      sendJson(res, opened.exitCode === 0 ? 200 : 500, {
+        ok: opened.exitCode === 0,
+        platform: HOST_PLATFORM,
+        error: opened.exitCode === 0 ? undefined : '无法打开本机系统终端',
+      });
       return;
     }
 
@@ -4014,9 +4188,12 @@ const server = http.createServer(async (req, res) => {
     // API: One-click Heal SSH Tunnel + MCP + Syncthing across all enabled nodes
     if (req.method === 'POST' && u.pathname === '/api/heal') {
       try {
-        await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, { method: 'POST' });
+        await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, {
+          method: 'POST',
+          headers: MCP_AUTH_HEADERS,
+        });
       } catch {
-        await ensureMacMcpDaemonRunning();
+        await ensureLocalMcpDaemonRunning();
       }
       const st = await getCombinedSystemStatus();
       sendJson(res, 200, st);
