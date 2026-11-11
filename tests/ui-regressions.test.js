@@ -87,6 +87,7 @@ async function failedSend(newDraft) {
     dtSubmitting: false, dtInput: { value: 'original' }, dtAttachments: new Map([['W', [attachment]]]),
     dtDrafts: new Map(), dtHistory: new Map(), dtHistCursor: new Map(), DT_ATTACH_LABEL: 'Attachment: ',
     dtSlashMenu: { classList: { remove: noop } }, DOCKTERM_PICKER_SLASH_RE: /^\/model$/,
+    dtSuggestBtn: { addEventListener: noop },
     dtPinned: false, renderDocktermAttachments: noop, autoGrowDocktermComposer: noop, updateDocktermSendState: noop,
     renderDocktermPending: noop, renderDocktermChrome: noop, requestAnimationFrame: noop, scrollDocktermToBottom: noop,
     sendDocktermRawInput: () => new Promise(resolve => { resolveSend = resolve; }), showToast: noop, generateUUID: () => 'attempt' });

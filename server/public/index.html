@@ -462,6 +462,14 @@
       color: var(--text-muted);
     }
 
+    .node-pill-usage {
+      font-family: var(--font-mono);
+      font-size: calc(10px * var(--fs, 1));
+      color: var(--text-muted);
+    }
+    .node-pill-usage.is-warn { color: var(--warning); }
+    .node-pill-usage.is-crit { color: var(--danger); }
+
     .session-total {
       padding: 6px 14px 2px;
       font-size: calc(10.5px * var(--fs, 1));
@@ -2547,6 +2555,28 @@
       -webkit-user-select: text;
     }
     .composer__input::placeholder { color: var(--text-muted); }
+    /* Claude Code's prompt suggestion: shown as the placeholder, Tab fills it in */
+    .composer__box { position: relative; }
+    .composer__box.has-suggestion .composer__input { padding-right: 78px; }
+    .composer__box.has-suggestion .composer__input::placeholder { color: var(--text-secondary); opacity: .62; }
+    .composer__suggest {
+      position: absolute;
+      right: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 20px;
+      padding: 0 6px 0 3px;
+      border: 1px solid var(--border-hairline);
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      font-size: calc(10.5px * var(--fs, 1));
+      cursor: pointer;
+    }
+    .composer__suggest[hidden] { display: none; }
+    .composer__suggest:hover { color: var(--text-primary); border-color: var(--border-accent); }
+    .composer__suggest kbd { font-size: inherit; padding: 0 4px; border-radius: 4px; }
     .composer__foot {
       display: flex;
       align-items: center;
@@ -3166,6 +3196,7 @@
                     rows="1"
                     placeholder="给 Claude 发消息… 输入 / 查看命令，可粘贴或拖入图片、文件"
                   ></textarea>
+                  <button type="button" class="composer__suggest" id="docktermSuggestBtn" tabindex="-1" title="Claude Code 猜你接下来要说的话，按 Tab 填入输入框" hidden><kbd>Tab</kbd>填入</button>
                   <div class="composer__foot">
                     <span class="composer__hints"><kbd>↵</kbd> 发送 · <kbd>⇧↵</kbd> 换行 · <kbd>/</kbd> 命令 · <kbd>↑</kbd> 上一条 · <kbd>Esc</kbd> 中断</span>
                     <div class="composer__actions">
@@ -3179,7 +3210,6 @@
                   </div>
                 </div>
                 <div class="composer__bar" id="docktermModelBar">
-                  <span class="composer__usage" id="docktermUsage" hidden></span>
                   <span class="composer__bar-note" id="docktermModelNote"></span>
                   <div class="dt-pick" id="docktermModelPick">
                     <button type="button" class="dt-pick__btn" id="docktermModelBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="模型"><span class="dt-pick__label" id="docktermModelLabel">模型</span><svg class="dt-pick__chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
@@ -3936,10 +3966,11 @@
           const pill = mk(
             n.id,
             n.badge || n.name || n.id,
-            `<span class="node-pill-count">${countByNode[n.id] || 0}</span>`,
+            `<span class="node-pill-count">${countByNode[n.id] || 0}</span>${dtNodeUsageHtml(n.id)}`,
             nodeServerIcon(n.online),
           );
-          pill.title = `${n.name}${n.sshHost ? ` · ${n.sshHost}:${n.remoteWorkDir}` : ' · 未绑定 SSH'}\n${n.online ? '在线' : '离线'} · 右键编辑节点`;
+          pill.title = `${n.name}${n.sshHost ? ` · ${n.sshHost}:${n.remoteWorkDir}` : ' · 未绑定 SSH'}\n${n.online ? '在线' : '离线'} · 右键编辑节点`
+          { const ut = dtNodeUsageTitle(n.id); if (ut) pill.title += `\n${ut}`; }
           pill.addEventListener('click', () => setNodeFilter(selectedNodeFilter === n.id ? 'all' : n.id));
           pill.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -6522,6 +6553,8 @@
       const dtSlashMenu = document.getElementById('docktermSlashMenu');
       const dtSendBtn = document.getElementById('btnDocktermSend');
       const dtPasteBtn = document.getElementById('btnDocktermPaste');
+      const dtComposerBox = document.getElementById('docktermComposerBox');
+      const dtSuggestBtn = document.getElementById('docktermSuggestBtn');
       const dtInterruptBtn = document.getElementById('btnDocktermInterrupt');
       const dtStartBtn = document.getElementById('btnDocktermStartClaude');
       const dtStartBtnLabel = document.getElementById('btnDocktermStartClaudeLabel');
@@ -7086,6 +7119,7 @@
         dtInput.placeholder = c.status === 'working' ? 'Claude 正在执行… 可以继续输入，消息会排队发送'
           : c.status === 'asking' ? 'Claude 在等你确认上面的操作'
             : DT_PLACEHOLDER;
+        updateDocktermSuggestion();
 
         // load-earlier / beginning marker
         dtOlderBtn.hidden = !(c.hasOlder && c.messages.length > 0);
@@ -7329,6 +7363,7 @@
         c.model = data.model || null;
         c.launch = data.launch || null;
         c.claudeCwd = data.claudeCwd || '';
+        c.suggestion = typeof data.suggestion === 'string' ? data.suggestion.trim() : '';
         if (c.modelOverride && c.model && c.model.ts > c.modelOverride.at) c.modelOverride = null;
 
         // Optimistic bubbles disappear once the transcript has the real message (a message typed while
@@ -7534,7 +7569,6 @@
       const DT_USAGE_EVERY_MS = 10 * 60 * 1000;
       const DT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
       const DT_LINE_ORDER = ['fable', 'opus', 'sonnet', 'haiku'];
-      const dtUsageEl = document.getElementById('docktermUsage');
       const dtPicks = {
         model: { wrap: document.getElementById('docktermModelPick'), btn: document.getElementById('docktermModelBtn'), label: document.getElementById('docktermModelLabel'), menu: document.getElementById('docktermModelMenu'), title: '模型', cmd: '/model' },
         effort: { wrap: document.getElementById('docktermEffortPick'), btn: document.getElementById('docktermEffortBtn'), label: document.getElementById('docktermEffortLabel'), menu: document.getElementById('docktermEffortMenu'), title: 'Effort', cmd: '/effort' },
@@ -7596,6 +7630,7 @@
         if (!t || document.hidden) return;
         if (Date.now() - dtMetaFor(t).usageAt >= DT_USAGE_EVERY_MS) loadDocktermMeta(t, ['usage']);
       }, 30 * 1000);
+      setInterval(() => { if (!document.hidden) renderNodeFilterBar(); }, 60 * 1000);
 
       function dtResetText(iso) {
         const at = Date.parse(iso || '');
@@ -7612,23 +7647,35 @@
         return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 重置`;
       }
 
-      function renderDocktermUsage(t) {
-        const meta = t ? dtMetaFor(t) : null;
+      // Usage lives on the node pill (top-left), not under the composer. Shown only while the data is fresh.
+      const DT_USAGE_FRESH_MS = 25 * 60 * 1000;
+      function dtFreshUsage(nodeId) {
+        const meta = dtNodeMeta.get(nodeId || '');
         const u = meta && meta.usage;
-        if (!u || (!u.fiveHour && !u.week)) {
-          dtUsageEl.hidden = true;
-          return;
-        }
-        const meter = (label, x) => {
+        if (!u || (!u.fiveHour && !u.week)) return null;
+        if (u.source === 'cache' || meta.usageError) return null;
+        const at = Number(u.fetchedAt) || meta.usageAt || 0;
+        if (!at || Date.now() - at > DT_USAGE_FRESH_MS) return null;
+        return { meta, u };
+      }
+
+      function dtNodeUsageHtml(nodeId) {
+        const f = dtFreshUsage(nodeId);
+        if (!f) return '';
+        const { u } = f;
+        const part = (label, x) => {
           if (!x) return '';
           const pct = Math.max(0, Math.min(100, Math.round(Number(x.pct) || 0)));
           const cls = pct >= 90 ? ' is-crit' : pct >= 75 ? ' is-warn' : '';
-          const r = 9;
-          const len = 2 * Math.PI * r;
-          const arc = pct > 0 ? Math.max(1.5, (len * pct) / 100) : 0;
-          return `<span class="usage-meter${cls}"><span>${label}</span><span class="usage-ring"><svg viewBox="0 0 22 22" aria-hidden="true"><circle class="usage-ring__track" cx="11" cy="11" r="${r}"/>${arc ? `<circle class="usage-ring__value" cx="11" cy="11" r="${r}" stroke-dasharray="${arc.toFixed(2)} ${len.toFixed(2)}"/>` : ''}</svg><span class="usage-ring__num${pct >= 100 ? ' is-full' : ''}">${pct}</span></span></span>`;
+          return `<span class="node-pill-usage${cls}">${label} ${pct}%</span>`;
         };
-        dtUsageEl.innerHTML = meter('5h', u.fiveHour) + meter('周', u.week);
+        return part('5h', u.fiveHour) + part('周', u.week);
+      }
+
+      function dtNodeUsageTitle(nodeId) {
+        const f = dtFreshUsage(nodeId);
+        if (!f) return '';
+        const { meta, u } = f;
         const lines = [];
         const withReset = (text, iso) => {
           const r = dtResetText(iso);
@@ -7639,12 +7686,12 @@
         if (u.weekOpus) lines.push(`本周 Opus ${Math.round(u.weekOpus.pct)}%`);
         if (u.weekSonnet) lines.push(`本周 Sonnet ${Math.round(u.weekSonnet.pct)}%`);
         const when = u.fetchedAt ? new Date(u.fetchedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-        lines.push(u.source === 'cache'
-          ? `来自 Claude Code 的缓存（${when}）· 实时查询失败：${meta.usageError || '未知原因'}`
-          : `更新于 ${when} · 每 10 分钟刷新${meta.plan ? ` · ${meta.plan}` : ''}`);
-        dtUsageEl.title = lines.join('\n');
-        dtUsageEl.classList.toggle('is-stale', u.source === 'cache');
-        dtUsageEl.hidden = false;
+        lines.push(`更新于 ${when} · 每 10 分钟刷新${meta.plan ? ` · ${meta.plan}` : ''}`);
+        return lines.join('\n');
+      }
+
+      function renderDocktermUsage() {
+        renderNodeFilterBar();
       }
 
       function dtModelLabel(m) {
@@ -7894,6 +7941,34 @@
         dtSendBtn.disabled = dtSubmitting || Boolean(t?.chat?.sending) || (!dtInput.value.trim() && !atts.length);
         const label = dtSendBtn.querySelector('span');
         if (label) label.textContent = dtSubmitting ? '上传中…' : '发送';
+        updateDocktermSuggestion();
+      }
+
+      // Claude Code's prompt suggestion for this tab: only while Claude waits for input and nothing of ours is in flight
+      function docktermSuggestion(t) {
+        const c = t && t.chat;
+        if (!c || !c.suggestion || c.stale || !c.claudeRunning || c.status !== 'idle') return '';
+        if (Date.now() < (c.suggestionHoldUntil || 0) || c.pending.some((p) => !p.failed)) return '';
+        return c.suggestion;
+      }
+
+      function updateDocktermSuggestion() {
+        const t = activeChatTab();
+        const s = !dtInput.value ? docktermSuggestion(t) : '';
+        dtComposerBox.classList.toggle('has-suggestion', Boolean(s));
+        dtSuggestBtn.hidden = !s;
+        if (s) dtSuggestBtn.style.top = `${dtInput.offsetTop + 1}px`;
+        if (!dtInput.value && t && t.chat && t.chat.status === 'idle') dtInput.placeholder = s || DT_PLACEHOLDER;
+      }
+
+      function acceptDocktermSuggestion() {
+        const s = dtInput.value ? '' : docktermSuggestion(activeChatTab());
+        if (!s) return false;
+        dtInput.value = s;
+        dtInput.focus();
+        dtInput.setSelectionRange(s.length, s.length);
+        dtInput.dispatchEvent(new Event('input'));
+        return true;
       }
 
       function insertIntoDocktermComposer(text) {
@@ -8187,6 +8262,9 @@
         }
         dtHistCursor.delete(t.tabId);
 
+        // the suggestion on screen belongs to the turn that just ended; a poll already in flight may still carry it
+        c.suggestion = '';
+        c.suggestionHoldUntil = Date.now() + 2500;
         dtInput.value = '';
         dtDrafts.set(t.tabId, '');
         if (atts.length) dtAttachments.set(t.tabId, dtAttachList(t).filter((a) => !atts.includes(a)));
@@ -8239,6 +8317,9 @@
         kickDocktermPoll(350);
       }
 
+      dtSuggestBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      dtSuggestBtn.addEventListener('click', () => acceptDocktermSuggestion());
+
       dtInput.addEventListener('input', () => {
         if (activeTabId) { dtDrafts.set(activeTabId, dtInput.value); dtDraftRevision.set(activeTabId, (dtDraftRevision.get(activeTabId) || 0) + 1); }
         if (activeTabId && dtHistCursor.has(activeTabId)) {
@@ -8272,6 +8353,12 @@
             dtSlashMenu.classList.remove('open');
             return;
           }
+        }
+
+        // Tab takes Claude Code's suggestion (shown as the placeholder), like in the terminal
+        if (e.key === 'Tab' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && acceptDocktermSuggestion()) {
+          e.preventDefault();
+          return;
         }
 
         // Answer a permission prompt with its number key while the composer is empty
