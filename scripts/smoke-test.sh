@@ -5,6 +5,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 export TAKT_HOME="$(mktemp -d)"
+export TAKT_SKIP_OPTIONAL_SERVICES=1 TAKT_MANAGED_SERVICES=1
 export TAKT_PORT="${SMOKE_PORT:-3290}" TAKT_MCP_PORT="${SMOKE_MCP_PORT:-18990}" TAKT_EDA_PORT="${SMOKE_EDA_PORT:-49890}"
 UI="http://127.0.0.1:$TAKT_PORT"; MCP="http://127.0.0.1:$TAKT_MCP_PORT"
 FAILS=0

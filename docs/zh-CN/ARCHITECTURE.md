@@ -1,5 +1,7 @@
 # 架构说明
 
+对话与文件交互约束见[英文架构文档](../ARCHITECTURE.md#conversation-and-file-interaction-guarantees)：窗口与会话分开标识；发送前核对当前进程，完整消息排队；失败保留文字和附件；列表隐藏保留远端历史和任务。文件树上传需确认同名覆盖，引用前校验远端内容；本机写入成功不代表远端已同步。
+
 > English: [ARCHITECTURE.md](../ARCHITECTURE.md)
 
 TAKT-UI-CC 在你的 Mac 上有三个运行单元，每台服务器上只有很小的占用。架构图见英文版（Mermaid）；下面是要点。

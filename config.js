@@ -50,6 +50,8 @@ module.exports = {
 
   // Web workbench (browser / desktop shell loads this)
   PORT: Number(process.env.TAKT_PORT || process.env.PORT || 3080),
+  // launchd/systemd or isolated tests may supervise services themselves.
+  MANAGED_SERVICES: process.env.TAKT_MANAGED_SERVICES === '1',
   // Local MCP server, reverse-tunnelled to every Linux node
   MCP_PORT: Number(process.env.TAKT_MCP_PORT || process.env.MAC_MCP_PORT || 18765),
   // EasyEDA bridge (optional MCP tool pack)

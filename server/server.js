@@ -22,12 +22,15 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
-const pty = require('/opt/homebrew/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty');
-const { WebSocketServer } = require('/opt/homebrew/lib/node_modules/@deepseek-ai/dsh/node_modules/ws');
+const pty = require('node-pty');
+const { WebSocketServer } = require('ws');
+const cfg = require('../config');
+const { InteractionError, createQueue, inside, checkedPath, fileName, writeUpload, readJsonBody } = require('./lib/interactions');
+const queueInteraction = createQueue();
 
-const PORT = Number(process.env.PORT || 3080);
-const BASE_TAKT_DIR = '/Users/will/.takt-ai';
-const KOREA_WORKSPACE_DIR = '/Users/will/Documents/Korea_Server';
+const PORT = cfg.PORT;
+const BASE_TAKT_DIR = cfg.TAKT_HOME;
+const KOREA_WORKSPACE_DIR = cfg.WORKSPACE_LINK_DIR;
 const NODES_FILE = path.join(BASE_TAKT_DIR, 'nodes.json');
 const SESSION_TITLES_FILE = path.join(BASE_TAKT_DIR, 'session-titles.json');
 const WORKBENCH_DB_FILE = path.join(BASE_TAKT_DIR, 'takt-workbench.sqlite');
@@ -91,32 +94,11 @@ function runCmd(cmd, args, timeoutMs = 8000) {
 // ============================================================================
 // 0. Multi-Linux Node Registry & Auto-Provisioning (work, work2, work3...)
 // ============================================================================
-const DEFAULT_NODES = [
-  {
-    id: 'korea-claude',
-    name: '韩国首尔主节点',
-    badge: 'KR-1',
-    sshHost: 'korea-claude',
-    remoteWorkDir: '/root/work',
-    localWorkDir: '/Users/will/.takt-ai/work',
-    localWorkAlias: 'work',
-    syncthingFolderId: 'korea-work',
-    syncthingDeviceId: 'A6U6UBG-HA5OGV6-UWMIWSH-RTW7ZJD-3HLDTB4-CNQ3WEX-HO2L5RM-SDD4UAO',
-    enabled: true,
-  },
-  {
-    id: 'linux-work2',
-    name: 'Linux 节点 2',
-    badge: 'LX-2',
-    sshHost: '',
-    remoteWorkDir: '/root/work',
-    localWorkDir: '/Users/will/.takt-ai/work2',
-    localWorkAlias: 'work2',
-    syncthingFolderId: 'takt-work2',
-    syncthingDeviceId: '',
-    enabled: false,
-  },
-];
+const DEFAULT_NODES = [{
+  id: cfg.PRIMARY_NODE_ID, name: 'Linux 节点 1', badge: 'LX-1', sshHost: '',
+  remoteWorkDir: '/root/work', localWorkDir: LOCAL_WORK_DIR, localWorkAlias: 'work',
+  syncthingFolderId: 'takt-work', syncthingDeviceId: '', enabled: false,
+}];
 
 function ensureNodeLocalDirAndSymlink(node) {
   try {
@@ -139,7 +121,7 @@ function ensureNodeLocalDirAndSymlink(node) {
     }
 
     // Create convenience symlink in /Users/will/Documents/Korea_Server/<alias>
-    if (fs.existsSync(KOREA_WORKSPACE_DIR)) {
+    if (KOREA_WORKSPACE_DIR && fs.existsSync(KOREA_WORKSPACE_DIR)) {
       const linkPath = path.join(KOREA_WORKSPACE_DIR, alias);
       if (!fs.existsSync(linkPath)) {
         try { fs.symlinkSync(localDir, linkPath); } catch {}
@@ -177,6 +159,13 @@ function getNodeById(nodeId) {
     nodes.find((n) => n.id === nodeId || n.sshHost === nodeId || n.localWorkAlias === nodeId) ||
     nodes[0]
   );
+}
+
+function requireNode(nodeId, sshHost = '') {
+  const nodes = loadNodes();
+  const node = nodeId ? nodes.find(n => [n.id, n.sshHost, n.localWorkAlias].includes(nodeId)) : nodes[0];
+  if (!node || (sshHost && sshHost !== node.sshHost)) throw new InteractionError(400, '节点不匹配，请刷新后重试');
+  return node;
 }
 
 function discoverSshConfigHosts() {
@@ -221,7 +210,7 @@ function discoverSshConfigHosts() {
 function getSyncthingApiKey() {
   try {
     const cfgXml = fs.readFileSync(
-      path.join(os.homedir(), 'Library/Application Support/Syncthing/config.xml'),
+      cfg.findSyncthingConfig(),
       'utf8'
     );
     const m = cfgXml.match(/<apikey>([^<]+)<\/apikey>/);
@@ -280,9 +269,8 @@ async function provisionLinuxNode(node) {
   }
 
   // Establish isolated MCP reverse tunnel for this node
-  const sock = node.id === 'korea-claude'
-    ? '/Users/will/.ssh/sockets/takt-mcp-tunnel.sock'
-    : `/Users/will/.ssh/sockets/takt-mcp-tunnel-${node.id.replace(/[^a-zA-Z0-9_-]/g, '')}.sock`;
+  const sock = path.join(cfg.SSH_SOCKET_DIR, `takt-mcp-tunnel-${node.id.replace(/[^a-zA-Z0-9_-]/g, '')}.sock`);
+  await fsp.mkdir(cfg.SSH_SOCKET_DIR, { recursive: true });
 
   await runCmd('ssh', ['-S', sock, '-O', 'exit', node.sshHost], 2500);
   const tunRes = await runCmd('ssh', [
@@ -290,8 +278,8 @@ async function provisionLinuxNode(node) {
     '-o', 'ConnectTimeout=5',
     '-o', 'ExitOnForwardFailure=no',
     '-o', 'ServerAliveInterval=20',
-    '-R', '18765:127.0.0.1:18765',
-    '-R', '49620:127.0.0.1:49620',
+    '-R', `${cfg.MCP_PORT}:127.0.0.1:${cfg.MCP_PORT}`,
+    '-R', `${cfg.EDA_PORT}:127.0.0.1:${cfg.EDA_PORT}`,
     ...(node.syncthingTunnelPort ? ['-L', `127.0.0.1:${node.syncthingTunnelPort}:127.0.0.1:22000`] : []),
     ...(node.desktopWebPort ? ['-L', `127.0.0.1:${node.desktopWebPort}:127.0.0.1:6080`] : []),
     ...(node.desktopVncPort ? ['-L', `127.0.0.1:${node.desktopVncPort}:127.0.0.1:5901`] : []),
@@ -304,7 +292,7 @@ async function provisionLinuxNode(node) {
 
   // Provision remote work directory + ~/.claude.json MCP entry + read remote Syncthing Device ID
   const remoteWork = node.remoteWorkDir || '/root/work';
-  const mcpUrl = `http://127.0.0.1:18765/mcp?node=${encodeURIComponent(node.id)}`;
+  const mcpUrl = `http://127.0.0.1:${cfg.MCP_PORT}/mcp?node=${encodeURIComponent(node.id)}`;
   const setupPy = `
 import json, os, subprocess
 
@@ -336,12 +324,13 @@ if os.path.exists("/usr/local/bin/mac-industrial-mcp-client"):
         "type": "stdio",
         "command": "/usr/local/bin/mac-industrial-mcp-client",
         "args": [],
-        "env": {"TAKT_NODE_ID": ${JSON.stringify(node.id)}}
+        "env": {"TAKT_NODE_ID": ${JSON.stringify(node.id)}, "TAKT_MCP_TOKEN": ${JSON.stringify(cfg.getMcpToken())}}
     }
 else:
     cfg["mcpServers"]["mac-industrial"] = {
         "type": "http",
-        "url": mcp_url
+        "url": mcp_url,
+        "headers": {"Authorization": "Bearer " + ${JSON.stringify(cfg.getMcpToken())}}
     }
 
 if os.path.exists("/usr/local/bin/instabox-computer-use"):
@@ -416,6 +405,7 @@ print(json.dumps({"ok": True, "workDir": work_dir, "mcpUrl": mcp_url, "syncthing
 // Ensure Mac Industrial MCP Daemon (:18765) stays running in background
 let mcpSupervisorBusy = false;
 async function ensureMacMcpDaemonRunning() {
+  if (cfg.MANAGED_SERVICES) return;
   if (mcpSupervisorBusy) return;
   mcpSupervisorBusy = true;
   try {
@@ -423,19 +413,19 @@ async function ensureMacMcpDaemonRunning() {
     const timer = setTimeout(() => ctrl.abort(), 1800);
     let ok = false;
     try {
-      const res = await fetch('http://127.0.0.1:18765/system-status', { signal: ctrl.signal });
+      const res = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-status`, { signal: ctrl.signal });
       if (res.ok) {
         const st = await res.json();
         ok = true;
         if (st && st.mcpStatus && !st.mcpStatus.remoteTunnelOk && !st.healing) {
-          fetch('http://127.0.0.1:18765/system-heal', { method: 'POST' }).catch(() => {});
+          fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, { method: 'POST' }).catch(() => {});
         }
       }
     } catch {}
     clearTimeout(timer);
 
     if (!ok) {
-      const mcpChild = spawn(process.execPath, ['/Users/will/.takt-ai/mcp-server/server.js', '--http'], {
+      const mcpChild = spawn(process.execPath, [path.join(cfg.REPO_ROOT, 'mcp-server/server.js'), '--http'], {
         detached: true,
         stdio: 'ignore',
         env: { ...process.env },
@@ -737,13 +727,13 @@ const stmtRegisterLocalSession = workbenchDb.prepare(`
 const stmtRenameSession = workbenchDb.prepare(`
   UPDATE sessions
   SET custom_title = ?, title = ?, updated_at = ?
-  WHERE id = ?
+  WHERE node_id = ? AND id = ?
 `);
 
 const stmtSoftDeleteSession = workbenchDb.prepare(`
   UPDATE sessions
   SET deleted = 1, updated_at = ?
-  WHERE id = ?
+  WHERE node_id = ? AND id = ?
 `);
 
 const stmtUpsertNodeStatus = workbenchDb.prepare(`
@@ -766,19 +756,19 @@ function loadCustomSessionTitles() {
   return {};
 }
 
-function saveCustomSessionTitle(sid, newTitle) {
+function saveCustomSessionTitle(sid, newTitle, nodeId) {
   const map = loadCustomSessionTitles();
   if (newTitle) {
-    map[sid] = newTitle;
+    map[`${nodeId}::${sid}`] = newTitle;
   } else {
-    delete map[sid];
+    delete map[`${nodeId}::${sid}`];
   }
   try {
     fs.writeFileSync(SESSION_TITLES_FILE, JSON.stringify(map, null, 2), 'utf8');
   } catch {}
   try {
     if (newTitle) {
-      stmtRenameSession.run(newTitle, newTitle, Date.now(), sid);
+      stmtRenameSession.run(newTitle, newTitle, Date.now(), nodeId, sid);
     }
   } catch {}
 }
@@ -873,7 +863,7 @@ async function syncSingleNodeToSqlite(node, customTitles) {
               const fPath = normalizeToTopProjectPath(node, f.path);
               upsertProjectInSqlite(node, fPath, f.name, 0);
               for (const s of (f.sessions || [])) {
-                const customTitle = customTitles[s.id] || '';
+                const customTitle = customTitles[`${node.id}::${s.id}`] || (loadNodes().length === 1 ? customTitles[s.id] : '') || '';
                 const finalTitle = customTitle || s.title || `会话 ${String(s.id).slice(0, 8)}`;
                 stmtUpsertSessionFromScan.run(
                   s.id,
@@ -1074,19 +1064,22 @@ syncAllNodesToSqlite().catch(() => {});
 const activePtyTabs = new Map();
 
 function getOrCreatePtyTab({ tabId, sessionId, title, cwd, resume, mode, nodeId, sshHost }) {
+  const requestedNode = requireNode(nodeId, sshHost);
   if (activePtyTabs.has(tabId)) {
     const existing = activePtyTabs.get(tabId);
     if (!existing.exited) {
+      if (existing.nodeId !== requestedNode.id) throw new InteractionError(409, '窗口属于另一个节点');
       if (title && title !== existing.title) existing.title = title;
       return existing;
     }
     activePtyTabs.delete(tabId);
   }
 
-  const node = getNodeById(nodeId || sshHost);
+  const node = requestedNode;
   const remoteRoot = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
   const targetCwd = (cwd && String(cwd).startsWith('/')) ? String(cwd) : remoteRoot;
-  const targetSshHost = sshHost || node.sshHost || 'korea-claude';
+  const targetSshHost = node.sshHost;
+  if (!targetSshHost || node.enabled === false) throw new InteractionError(409, '节点未连接');
   const sid = sessionId || crypto.randomUUID();
   const isShell = mode === 'shell';
   registerSessionInSqlite({ id: sid, nodeId: node.id, cwd: targetCwd, title });
@@ -1154,7 +1147,7 @@ function getOrCreatePtyTab({ tabId, sessionId, title, cwd, resume, mode, nodeId,
         try { ws.send(msg); } catch {}
       }
     }
-    activePtyTabs.delete(tabId);
+    if (activePtyTabs.get(tabId) === tabObj) activePtyTabs.delete(tabId);
   });
 
   activePtyTabs.set(tabId, tabObj);
@@ -1168,6 +1161,7 @@ function sanitizeTmuxSessionId(tabId) {
 
 function closePtyTab(tabId, explicitNodeId) {
   const tab = activePtyTabs.get(tabId);
+  if (!tab || (explicitNodeId && tab.nodeId !== explicitNodeId)) return false;
   const node = getNodeById(explicitNodeId || (tab && tab.nodeId));
   const targetHost = (tab && tab.sshHost) || (node && node.sshHost) || 'korea-claude';
   const tmuxSess = sanitizeTmuxSessionId(tabId);
@@ -1205,7 +1199,7 @@ function inferNodeFromPathOrId(inputPath = '', nodeId = '') {
     if (n.localWorkDir && (raw === n.localWorkDir || raw.startsWith(n.localWorkDir + '/'))) {
       return n;
     }
-    const docAliasDir = path.join(KOREA_WORKSPACE_DIR, n.localWorkAlias || 'work');
+    const docAliasDir = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, n.localWorkAlias || 'work');
     if (raw === docAliasDir || raw.startsWith(docAliasDir + '/')) {
       return n;
     }
@@ -1221,7 +1215,7 @@ function mapRemoteCwdToLocal(remoteCwd = '/root/work', nodeId = '') {
   const node = inferNodeFromPathOrId(remoteCwd, nodeId);
   const localBase = node.localWorkDir || LOCAL_WORK_DIR;
   const remoteBase = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
-  const docAliasBase = path.join(KOREA_WORKSPACE_DIR, node.localWorkAlias || 'work');
+  const docAliasBase = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, node.localWorkAlias || 'work');
 
   const clean = String(remoteCwd || remoteBase).trim().replace(/\/+$/, '') || remoteBase;
   if (clean === localBase || clean === remoteBase || clean === docAliasBase) {
@@ -1229,22 +1223,22 @@ function mapRemoteCwdToLocal(remoteCwd = '/root/work', nodeId = '') {
   }
   if (clean.startsWith(localBase + '/')) {
     const resolved = path.resolve(clean);
-    if (resolved.startsWith(localBase)) return resolved;
+    if (inside(localBase, resolved)) return resolved;
   }
   if (clean.startsWith(docAliasBase + '/')) {
     const rel = clean.slice(docAliasBase.length + 1);
     const resolved = path.resolve(localBase, rel);
-    if (resolved.startsWith(localBase)) return resolved;
+    if (inside(localBase, resolved)) return resolved;
   }
   if (clean.startsWith(remoteBase + '/')) {
     const rel = clean.slice(remoteBase.length + 1);
     const resolved = path.resolve(localBase, rel);
-    if (resolved.startsWith(localBase)) return resolved;
+    if (inside(localBase, resolved)) return resolved;
   }
   if (clean.startsWith('/root/work/')) {
     const rel = clean.slice('/root/work/'.length);
     const resolved = path.resolve(localBase, rel);
-    if (resolved.startsWith(localBase)) return resolved;
+    if (inside(localBase, resolved)) return resolved;
   }
   return localBase;
 }
@@ -1263,7 +1257,7 @@ function cwdMapsToLocal(cwd, node) {
   if (!clean || !clean.startsWith('/')) return true;
   const localBase = node.localWorkDir || LOCAL_WORK_DIR;
   const remoteBase = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
-  const docAliasBase = path.join(KOREA_WORKSPACE_DIR, node.localWorkAlias || 'work');
+  const docAliasBase = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, node.localWorkAlias || 'work');
   return [localBase, remoteBase, docAliasBase, '/root/work'].some((b) => clean === b || clean.startsWith(`${b}/`));
 }
 
@@ -1280,7 +1274,7 @@ function resolveAnyFilePathToLocalAndRemote(inputPath, sessionCwd = '/root/work'
   const node = inferNodeFromPathOrId(raw || sessionCwd, nodeId);
   const localBase = node.localWorkDir || LOCAL_WORK_DIR;
   const remoteBase = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
-  const docAliasBase = path.join(KOREA_WORKSPACE_DIR, node.localWorkAlias || 'work');
+  const docAliasBase = path.join(KOREA_WORKSPACE_DIR || BASE_TAKT_DIR, node.localWorkAlias || 'work');
 
   let remotePath = '';
   let localPath = '';
@@ -1301,7 +1295,7 @@ function resolveAnyFilePathToLocalAndRemote(inputPath, sessionCwd = '/root/work'
     const rel = raw.slice('/root/work'.length).replace(/^\/+/, '');
     localPath = path.resolve(localBase, rel);
     remotePath = rel ? `${remoteBase}/${rel}` : remoteBase;
-  } else if (raw.startsWith('/Users/will/')) {
+  } else if (raw.startsWith(os.homedir() + '/')) {
     localPath = path.resolve(raw);
     remotePath = localPath;
   } else if (raw.startsWith('/')) {
@@ -1317,7 +1311,7 @@ function resolveAnyFilePathToLocalAndRemote(inputPath, sessionCwd = '/root/work'
   } else {
     const baseLocal = mapRemoteCwdToLocal(sessionCwd, node.id);
     localPath = path.resolve(baseLocal, raw);
-    if (localPath.startsWith(localBase)) {
+    if (inside(localBase, localPath)) {
       const rel = localPath.slice(localBase.length).replace(/^\/+/, '');
       remotePath = rel ? `${remoteBase}/${rel}` : remoteBase;
     } else {
@@ -1394,6 +1388,7 @@ async function buildFileTree(localRoot, remoteRoot, node, maxDepth = 4) {
             name: e.name,
             type: 'dir',
             path: fullLocal,
+            nodeId: node.id,
             localPath: fullLocal,
             remotePath: fullRemote,
             relPath: relFromProject,
@@ -1405,6 +1400,7 @@ async function buildFileTree(localRoot, remoteRoot, node, maxDepth = 4) {
             name: e.name,
             type: 'file',
             path: fullLocal,
+            nodeId: node.id,
             localPath: fullLocal,
             remotePath: fullRemote,
             relPath: relFromProject,
@@ -1474,7 +1470,7 @@ async function getCombinedSystemStatus() {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 2000);
-    const res = await fetch('http://127.0.0.1:18765/system-status', { signal: ctrl.signal });
+    const res = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-status`, { signal: ctrl.signal });
     clearTimeout(timer);
     if (res.ok) {
       mcpData = await res.json();
@@ -1514,10 +1510,8 @@ async function getCombinedSystemStatus() {
   const bestPing = onlineNodeEntries.length > 0
     ? Math.min(...onlineNodeEntries.map((n) => Number(n.pingMs || 999)))
     : (mcpData?.mcpStatus?.pingMs || null);
-  const activeHostSummary = onlineNodeEntries.length > 0
-    ? onlineNodeEntries.map((n) => n.sshHost).join('+')
-    : 'korea-claude';
-  const egressIp = onlineNodeEntries[0]?.egressIp || mcpData?.remoteCli?.egressIp || '210.121.44.96';
+  const activeHostSummary = onlineNodeEntries.map(n => n.sshHost).join('+');
+  const egressIp = onlineNodeEntries[0]?.egressIp || mcpData?.remoteCli?.egressIp || '';
   const remoteTailscaleOk = Boolean(mcpData?.remoteCli?.tailscaleOk);
   const remoteTailscaleIp = mcpData?.remoteCli?.tailscaleIp || '';
 
@@ -1526,9 +1520,9 @@ async function getCombinedSystemStatus() {
     ssh: {
       online: anyNodeOnline,
       host: activeHostSummary,
-      ingressIp: '210.126.238.129',
+      ingressIp: '',
       egressIp,
-      egressLocked: egressIp === '210.121.44.96',
+      egressLocked: false,
       pingMs: bestPing,
       remoteCliProcesses: totalCliProcs,
       activeWorkbenchTabs: activePtyTabs.size,
@@ -2485,13 +2479,27 @@ if pane_pid:
             break
         queue.extend(children.get(cur, []))
 
-claimed_by_others = set()
-for pid, pr in procs.items():
-    if pid != claude_pid and CLAUDE_RE.search(pr[2]):
-        m = UUID_RE.search(pr[2])
-        if m:
-            claimed_by_others.add(m.group(1))
+# Claude Code publishes the live PID -> session mapping even when its process title
+# no longer contains launch arguments. Never infer ownership from transcript mtimes.
+def registered_session(pid):
+    try:
+        with open(os.path.join(home, ".claude", "sessions", "%d.json" % pid)) as f:
+            entry = json.load(f)
+        value = entry.get("sessionId", "")
+        if entry.get("pid") != pid or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+            return None
+        return entry
+    except Exception:
+        return None
 
+live_session = registered_session(claude_pid) if claude_pid else None
+binding_source = "process-registry" if live_session else ""
+duplicate_owner = 0
+if live_session:
+    owners = [pid for pid, pr in procs.items() if CLAUDE_RE.search(pr[2])
+              and (registered_session(pid) or {}).get("sessionId") == live_session["sessionId"]]
+    if owners:
+        duplicate_owner = max(owners, key=lambda pid: (procs[pid][1], -pid))
 claude_running = bool(claude_pid)
 claude_start = 0
 claude_cwd = ""
@@ -2506,15 +2514,19 @@ if claude_pid:
     except Exception:
         claude_cwd = ""
     m = UUID_RE.search(args)
-    if m:
+    if live_session:
+        hint_ids.append(live_session["sessionId"])
+        claude_cwd = live_session.get("cwd") or claude_cwd
+    elif m:
         hint_ids.append(m.group(1))
+        binding_source = "process-arguments"
     m = re.search(r"--model[ =](\S+)", args)
     launch_model = m.group(1) if m else ""
     m = re.search(r"--effort[ =](\S+)", args)
     launch_effort = m.group(1) if m else ""
 elif pane_text and ("esc to interrupt" in pane_text.lower() or "? for shortcuts" in pane_text):
     claude_running = True
-if sid and sid not in hint_ids:
+if not claude_running and sid and sid not in hint_ids:
     hint_ids.append(sid)
 
 # Transcript resolution: Claude stores <cwd with every non-alphanumeric char -> '-'>/<session>.jsonl
@@ -2533,41 +2545,6 @@ for c in cwd_opts:
     if os.path.isdir(d) and d not in dirs:
         dirs.append(d)
 
-def mtime(p):
-    try:
-        return os.path.getmtime(p)
-    except Exception:
-        return 0
-
-def first_ts(p):
-    # timestamp of the first record = when that transcript was started
-    try:
-        with open(p, "rb") as f:
-            head = f.read(65536)
-        for line in head.split(b"\n"):
-            try:
-                ts = json.loads(line.decode("utf-8", "ignore")).get("timestamp")
-            except Exception:
-                continue
-            if isinstance(ts, str) and len(ts) >= 19:
-                import calendar
-                return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
-    except Exception:
-        pass
-    return mtime(p)
-
-def follow_clear(current, pool):
-    # /clear starts a new transcript in the same process: switch only to a newer file that
-    # began after the current one went quiet (files of other tabs are excluded from the pool)
-    best = current
-    for p in sorted(pool, key=mtime, reverse=True):
-        if p == current or mtime(p) <= mtime(current):
-            continue
-        if first_ts(p) >= mtime(current) - 5:
-            best = p
-            break
-    return best
-
 hinted = ""
 for hid in hint_ids:
     for d in dirs:
@@ -2578,42 +2555,31 @@ for hid in hint_ids:
     if not hinted:
         g = glob.glob(os.path.join(proj_root, "*", hid + ".jsonl"))
         if g:
-            hinted = max(g, key=mtime)
+            hinted = sorted(g)[0] if len(g) == 1 else ""
     if hinted:
         break
 
-chosen = ""
-if claude_pid:
-    window = claude_start - 5
-    pool = []
-    for d in dirs:
-        for p in glob.glob(os.path.join(d, "*.jsonl")):
-            if mtime(p) < window:
-                continue
-            if os.path.splitext(os.path.basename(p))[0] in claimed_by_others or os.path.realpath(p) in claimed_paths:
-                continue
-            pool.append(p)
-    if hinted and mtime(hinted) >= window:
-        chosen = follow_clear(hinted, pool)          # launched with --session-id / -r and writing it
-    elif known_path and known_path in pool:
-        chosen = follow_clear(known_path, pool)      # stick to what this tab showed before
-    elif pool:
-        chosen = max(pool, key=mtime)                # plain "claude": newest unclaimed transcript
-    elif hinted:
-        chosen = hinted                              # just resumed, nothing written yet
-elif hinted:
-    chosen = hinted
-elif known_path:
-    chosen = known_path
+# An exact live identity wins over a cached path or another tab's claimed path.
+# A newly created transcript may not exist yet: wait rather than borrow a sibling's.
+chosen = hinted
+binding_error = ""
+if claude_running and not hint_ids:
+    binding_error = "无法确认此窗口的 Claude 会话，请切到终端查看；已停止猜测其他窗口的记录"
+if duplicate_owner and duplicate_owner != claude_pid:
+    binding_error = "同一会话已在另一个 Claude 进程运行，此重复窗口暂停发送，请切回原窗口"
 chosen = safe_jsonl(chosen)
 
 res = {
     "claudeRunning": claude_running,
+    "bindingSource": binding_source,
+    "bindingError": binding_error,
     "paneText": pane_text,
     "paneCwd": claude_cwd or pane_cwd,
     "tmuxAlive": bool(pane_pid),
+    "panePid": pane_pid,
+    "claudePid": claude_pid,
     "jsonlPath": chosen,
-    "resolvedSessionId": os.path.splitext(os.path.basename(chosen))[0] if chosen else "",
+    "resolvedSessionId": hint_ids[0] if hint_ids else "",
     "launchModel": launch_model,
     "launchEffort": launch_effort,
 }
@@ -2685,8 +2651,9 @@ function sweepDocktermCaches() {
 }
 
 function resolveDocktermTarget({ tabId, sessionId, nodeId, sshHost }) {
-  const node = getNodeById(nodeId || sshHost);
-  const host = sshHost || (node && node.sshHost) || 'korea-claude';
+  const node = requireNode(nodeId, sshHost);
+  const host = node.sshHost;
+  if (!host || node.enabled === false) throw new InteractionError(409, '节点未连接');
   const tmuxSess = sanitizeTmuxSessionId(tabId || sessionId || 'default');
   const key = `${host}::${tmuxSess}`;
   let tab = docktermTabs.get(key);
@@ -2723,12 +2690,20 @@ async function refreshDocktermTab(tab, { tabId, sessionId, cwd }) {
     return;
   }
 
-  tab.stale = false;
+  tab.bindingError = raw.bindingError || '';
+  tab.bindingSource = raw.bindingSource || '';
+  tab.stale = Boolean(tab.bindingError);
+  tab.panePid = raw.panePid || 0;
+  tab.claudePid = raw.claudePid || 0;
+  tab.tmuxAlive = Boolean(raw.tmuxAlive);
   tab.claudeRunning = Boolean(raw.claudeRunning);
   tab.launch = { model: raw.launchModel || '', effort: raw.launchEffort || '' };
   tab.claudeCwd = raw.claudeRunning && typeof raw.paneCwd === 'string' ? raw.paneCwd : '';
   tab.screen = classifyClaudeScreen(raw.paneText || '');
-  tab.resolvedSessionId = raw.resolvedSessionId || sessionId;
+  tab.resolvedSessionId = raw.resolvedSessionId || '';
+  tab.bindingToken = crypto.createHash('sha256').update(JSON.stringify([tab.host, tab.tmuxSess, tab.panePid, tab.claudePid, tab.resolvedSessionId])).digest('hex');
+  const localTab = activePtyTabs.get(tabId);
+  if (localTab && localTab.sshHost === tab.host && tab.bindingSource && tab.resolvedSessionId) localTab.sessionId = tab.resolvedSessionId;
 
   if (!raw.jsonlPath) {
     tab.path = '';
@@ -2777,7 +2752,10 @@ async function fetchDocktermChatView({ tabId, sessionId, cwd, nodeId, sshHost, e
     messages,
     total: st ? st.messages.length : 0,
     hasOlder: Boolean(st && st.startOffset > 0),
-    resolvedSessionId: tab.resolvedSessionId || sessionId,
+    resolvedSessionId: tab.resolvedSessionId || '',
+    bindingToken: tab.bindingToken || '',
+    bindingSource: tab.bindingSource || '',
+    bindingError: tab.bindingError || '',
     jsonlPath: tab.path,
     claudeRunning: tab.claudeRunning,
     status: screen.status,
@@ -2855,7 +2833,7 @@ function formatByteSize(n) {
 // Paths that already live on this Mac (never fetched from a node)
 function isLocalMacPath(p) {
   const s = String(p || '');
-  return s.startsWith('/Users/') || s === BASE_TAKT_DIR || s.startsWith(`${BASE_TAKT_DIR}/`) || s.startsWith(`${KOREA_WORKSPACE_DIR}/`);
+  return s.startsWith('/Users/') || s === BASE_TAKT_DIR || s.startsWith(`${BASE_TAKT_DIR}/`) || (KOREA_WORKSPACE_DIR && s.startsWith(`${KOREA_WORKSPACE_DIR}/`));
 }
 
 function remoteShellPath(p) {
@@ -3200,15 +3178,6 @@ async function fetchClaudeMeta({ nodeId, cwd, parts, force }) {
 // ============================================================================
 // 5. HTTP & WebSocket Server
 // ============================================================================
-function readJsonBody(req) {
-  return new Promise((resolve) => {
-    let body = '';
-    req.on('data', (c) => { body += c.toString(); });
-    req.on('end', () => {
-      try { resolve(JSON.parse(body || '{}')); } catch { resolve({}); }
-    });
-  });
-}
 
 function sendJson(res, status, obj) {
   res.writeHead(status, {
@@ -3234,6 +3203,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && u.pathname === '/interaction-state.js') {
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+      fs.createReadStream(path.join(PUBLIC_DIR, 'interaction-state.js')).pipe(res);
+      return;
+    }
     // Serve vendor static files
     if (req.method === 'GET' && u.pathname.startsWith('/vendor/')) {
       const fileName = path.basename(u.pathname);
@@ -3386,7 +3360,7 @@ const server = http.createServer(async (req, res) => {
       const prov = await provisionLinuxNode(target);
       saveNodes(nodes);
       syncAllNodesToSqlite().catch(() => {});
-      fetch('http://127.0.0.1:18765/system-heal', { method: 'POST' }).catch(() => {});
+      fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, { method: 'POST' }).catch(() => {});
       sendJson(res, 200, { ok: true, node: target, nodes, logs: prov.logs });
       return;
     }
@@ -3394,7 +3368,7 @@ const server = http.createServer(async (req, res) => {
     // API: Delete a non-primary Linux Node config (never deletes local workN files)
     if (req.method === 'DELETE' && u.pathname === '/api/nodes') {
       const id = String(u.searchParams.get('id') || '').trim();
-      if (!id || id === 'korea-claude') {
+      if (!id || id === loadNodes()[0]?.id) {
         sendJson(res, 400, { ok: false, error: '主节点不可删除' });
         return;
       }
@@ -3407,7 +3381,7 @@ const server = http.createServer(async (req, res) => {
     // API: Instabox Remote Desktop Plugin (noVNC Web + macOS Native Screen Sharing + AI/Human Control)
     if (u.pathname === '/api/remote-desktop' && (req.method === 'GET' || req.method === 'POST')) {
       const body = req.method === 'POST' ? await readJsonBody(req) : {};
-      const r = await fetch('http://127.0.0.1:18765/remote-desktop', {
+      const r = await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/remote-desktop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3461,7 +3435,7 @@ const server = http.createServer(async (req, res) => {
       }
       registerSessionInSqlite({
         id: sid,
-        nodeId: body.nodeId || 'korea-claude',
+        nodeId: requireNode(body.nodeId).id,
         cwd: body.cwd || '/root/work',
         title: body.title || `会话 ${sid.slice(0, 8)}`,
       });
@@ -3474,14 +3448,14 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const sid = String(body.id || '').trim();
       const title = String(body.title || '').trim().slice(0, 120);
-      const node = getNodeById(body.nodeId);
+      const node = requireNode(body.nodeId);
       if (!sid || !/^[a-zA-Z0-9_-]+$/.test(sid) || !title) {
         sendJson(res, 400, { ok: false, error: '会话 ID 或新名称不能为空' });
         return;
       }
-      saveCustomSessionTitle(sid, title);
-      if (activePtyTabs.has(sid)) {
-        activePtyTabs.get(sid).title = title;
+      saveCustomSessionTitle(sid, title, node.id);
+      for (const tab of activePtyTabs.values()) {
+        if (tab.nodeId === node.id && tab.sessionId === sid) tab.title = title;
       }
       if (node && node.enabled && node.sshHost) {
         const lineJson = JSON.stringify({ type: 'custom-title', customTitle: title });
@@ -3497,27 +3471,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Delete a session (soft-deletes in Local SQLite immediately + deletes remote .jsonl)
+    // Hide a conversation in this workbench; preserve its remote history and running process.
     if (req.method === 'DELETE' && u.pathname === '/api/sessions') {
       const sid = String(u.searchParams.get('id') || '').trim();
-      const nodeId = String(u.searchParams.get('nodeId') || '').trim();
-      const node = getNodeById(nodeId);
-      if (!sid || !/^[a-zA-Z0-9_-]+$/.test(sid)) {
-        sendJson(res, 400, { ok: false, error: 'Invalid session id' });
-        return;
-      }
-      stmtSoftDeleteSession.run(Date.now(), sid);
-      saveCustomSessionTitle(sid, '');
-      closePtyTab(sid, node.id);
-      if (node && node.enabled && node.sshHost) {
-        await runCmd('ssh', [
-          '-o', 'ConnectTimeout=4',
-          '-o', 'ClearAllForwardings=yes',
-          node.sshHost,
-          `find ~/.claude/projects -name ${shSingleQuote(sid + '.jsonl')} -delete`,
-        ], 5000);
-      }
-      sendJson(res, 200, { ok: true });
+      const node = requireNode(u.searchParams.get('nodeId') || '');
+      if (!/^[a-zA-Z0-9_-]+$/.test(sid)) throw new InteractionError(400, 'Invalid session id');
+      stmtSoftDeleteSession.run(Date.now(), node.id, sid);
+      saveCustomSessionTitle(sid, '', node.id);
+      sendJson(res, 200, { ok: true, id: sid, archived: true });
       return;
     }
 
@@ -3904,67 +3865,64 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Move / Reorganize file or folder via Drag & Drop in Right File Tree (Mac Local Disk)
-    if (req.method === 'POST' && u.pathname === '/api/files/move') {
+    // A local mirror path is a reference only after the corresponding remote object is verified.
+    if (req.method === 'POST' && u.pathname === '/api/file-reference') {
       const body = await readJsonBody(req);
-      const cwd = String(body.cwd || '').trim();
-      const nodeId = String(body.nodeId || '').trim();
-      const srcInfo = resolveAnyFilePathToLocalAndRemote(body.sourcePath || '', cwd, nodeId);
-      const dstDirInfo = resolveAnyFilePathToLocalAndRemote(body.targetDirPath || cwd, cwd, nodeId);
-      if (!srcInfo.localPath || !dstDirInfo.localPath || !srcInfo.localPath.startsWith(BASE_TAKT_DIR) || !dstDirInfo.localPath.startsWith(BASE_TAKT_DIR)) {
-        sendJson(res, 400, { ok: false, error: '非法路径：仅允许在本地工作区内拖拽移动' });
-        return;
+      const node = requireNode(body.nodeId);
+      if (!node.enabled || !node.sshHost) throw new InteractionError(409, '节点尚未连接');
+      const found = resolveAnyFilePathToLocalAndRemote(body.path, body.cwd, node.id);
+      if (found.node.id !== node.id || !found.localPath) throw new InteractionError(400, '文件不属于所选节点');
+      const local = await checkedPath(node.localWorkDir, found.localPath);
+      const relative = path.relative(node.localWorkDir, local).split(path.sep).join('/');
+      const remotePath = path.posix.join(node.remoteWorkDir, relative);
+      const stat = await fsp.stat(local);
+      let command;
+      if (stat.isDirectory()) command = `test -d ${shSingleQuote(remotePath)} && printf directory`;
+      else if (stat.isFile()) {
+        if (stat.size > CHAT_UPLOAD_MAX_BYTES) throw new InteractionError(413, '引用校验上限为 50 MB，请直接通过同步目录使用大文件');
+        command = `sha256sum -- ${shSingleQuote(remotePath)}`;
+      } else throw new InteractionError(400, '不支持引用此文件类型');
+      const remote = await runCmd('ssh', [...DOCKTERM_SSH_OPTS, node.sshHost, command], 12000);
+      if (remote.exitCode !== 0) throw new InteractionError(409, '该文件尚未同步到远端；请等待同步，或将文件作为对话附件上传');
+      if (stat.isFile()) {
+        const hash = crypto.createHash('sha256');
+        for await (const chunk of fs.createReadStream(local)) hash.update(chunk);
+        if (hash.digest('hex') !== remote.stdout.slice(0, 64)) throw new InteractionError(409, '本机与远端文件内容不同，请等待同步完成');
       }
-      const baseName = path.basename(srcInfo.localPath);
-      const newLocalPath = path.join(dstDirInfo.localPath, baseName);
-      if (newLocalPath === srcInfo.localPath || newLocalPath.startsWith(srcInfo.localPath + path.sep)) {
-        sendJson(res, 400, { ok: false, error: '不能将目录移动到其自身或子目录中' });
-        return;
-      }
-      if (!fs.existsSync(srcInfo.localPath)) {
-        sendJson(res, 404, { ok: false, error: '源路径不存在' });
-        return;
-      }
-      await fsp.mkdir(path.dirname(newLocalPath), { recursive: true });
-      await fsp.rename(srcInfo.localPath, newLocalPath);
-      sendJson(res, 200, { ok: true, from: srcInfo.localPath, to: newLocalPath });
+      sendJson(res, 200, { ok: true, remotePath, remoteConfirmed: true, directory: stat.isDirectory() });
       return;
     }
 
-    // API: Upload file(s) dropped from macOS Finder into Right File Tree (Mac Local Disk)
-    if (req.method === 'POST' && u.pathname === '/api/files/upload') {
-      const body = await readJsonBody(req);
-      const cwd = String(body.cwd || '').trim();
-      const nodeId = String(body.nodeId || '').trim();
-      const dstDirInfo = resolveAnyFilePathToLocalAndRemote(body.targetDirPath || cwd, cwd, nodeId);
-      const fileName = path.basename(String(body.fileName || '').trim());
-      const contentBase64 = String(body.contentBase64 || '');
-      if (!fileName || !dstDirInfo.localPath || !dstDirInfo.localPath.startsWith(BASE_TAKT_DIR)) {
-        sendJson(res, 400, { ok: false, error: '无效的文件名或目标目录' });
-        return;
-      }
-      await fsp.mkdir(dstDirInfo.localPath, { recursive: true });
-      const dstFileLocal = path.join(dstDirInfo.localPath, fileName);
-      const buf = Buffer.from(contentBase64, 'base64');
-      await fsp.writeFile(dstFileLocal, buf);
-      sendJson(res, 200, { ok: true, path: dstFileLocal, size: buf.length });
-      return;
-    }
-
-    // API: Create subfolder inside Right File Tree (Mac Local Disk)
-    if (req.method === 'POST' && u.pathname === '/api/files/mkdir') {
-      const body = await readJsonBody(req);
-      const cwd = String(body.cwd || '').trim();
-      const nodeId = String(body.nodeId || '').trim();
-      const parentInfo = resolveAnyFilePathToLocalAndRemote(body.parentDirPath || cwd, cwd, nodeId);
-      const folderName = path.basename(String(body.name || '').trim());
-      if (!folderName || !parentInfo.localPath || !parentInfo.localPath.startsWith(BASE_TAKT_DIR)) {
-        sendJson(res, 400, { ok: false, error: '目录名不能为空' });
-        return;
-      }
-      const newLocal = path.join(parentInfo.localPath, folderName);
-      await fsp.mkdir(newLocal, { recursive: true });
-      sendJson(res, 200, { ok: true, path: newLocal });
+    if (req.method === 'POST' && ['/api/files/move', '/api/files/upload', '/api/files/mkdir'].includes(u.pathname)) {
+      const body = await readJsonBody(req, u.pathname.endsWith('/upload') ? 14 * 1024 * 1024 : 1024 * 1024);
+      const node = requireNode(body.nodeId);
+      const root = node.localWorkDir;
+      if (!inside(BASE_TAKT_DIR, root) || !inside(await fsp.realpath(BASE_TAKT_DIR), await fsp.realpath(root))) throw new InteractionError(400, '节点目录不在 TAKT 工作区内');
+      const resolve = raw => {
+        const found = resolveAnyFilePathToLocalAndRemote(raw, body.cwd, node.id);
+        if (found.node.id !== node.id) throw new InteractionError(400, '文件不属于所选节点');
+        return found.localPath;
+      };
+      const result = await queueInteraction('files:' + node.id, async () => {
+        if (u.pathname.endsWith('/upload')) {
+          return writeUpload(root, resolve(body.targetDirPath || body.cwd), body.fileName, body.contentBase64, body.overwrite === true);
+        }
+        if (u.pathname.endsWith('/mkdir')) {
+          const parent = await checkedPath(root, resolve(body.parentDirPath || body.cwd));
+          const target = await checkedPath(root, path.join(parent, fileName(body.name)));
+          await fsp.mkdir(target, { recursive: true });
+          return { path: target };
+        }
+        const source = await checkedPath(root, resolve(body.sourcePath));
+        const directory = await checkedPath(root, resolve(body.targetDirPath || body.cwd));
+        const destination = await checkedPath(root, path.join(directory, path.basename(source)));
+        if (source === path.resolve(root) || inside(source, destination)) throw new InteractionError(400, '不能移动工作区根目录或移入自身');
+        try { await fsp.lstat(destination); throw new InteractionError(409, '目标已有同名文件或目录，移动已取消'); }
+        catch (err) { if (err.code !== 'ENOENT') throw err; }
+        await fsp.rename(source, destination);
+        return { from: source, to: destination };
+      });
+      sendJson(res, 200, { ok: true, ...result, delivery: 'local-only', remoteConfirmed: false });
       return;
     }
 
@@ -4015,85 +3973,34 @@ const server = http.createServer(async (req, res) => {
     // API: DockTerm Chat Mode — Send Input / Keys to Remote Tmux Session (Fallback when Native/Web PTY not directly used)
     if (req.method === 'POST' && u.pathname === '/api/chat-input') {
       const body = await readJsonBody(req);
-      const tabId = String(body.tabId || '').trim();
-      const text = typeof body.text === 'string' ? body.text : '';
-      const submitEnter = Boolean(body.submitEnter);
-      // Enter must arrive after Claude Code has finished ingesting the text, otherwise it is
-      // swallowed as part of the paste and the message is never submitted.
-      const enterDelayMs = Math.max(60, Math.min(1500, Number(body.enterDelayMs) || (90 + Math.ceil(text.length / 20))));
-      const node = getNodeById(body.nodeId || body.sshHost);
-      const targetHost = String(body.sshHost || (node && node.sshHost) || 'korea-claude').trim();
-      const tmuxSess = sanitizeTmuxSessionId(tabId || 'default');
-
-      // Bracketed-paste payloads go through a tmux buffer (paste-buffer -p re-wraps them only if the app asked for it)
-      const PASTE_START = '\x1b[200~';
-      const PASTE_END = '\x1b[201~';
-      const isPaste = text.startsWith(PASTE_START) && text.endsWith(PASTE_END);
-
-      // A submitted paste always goes through tmux on the node: Enter has to wait until Claude Code
-      // has finished the paste, and only the pane shows that ("Pasting…" in its footer)
-      const localTab = activePtyTabs.get(tabId);
-      if (localTab && !localTab.exited && !(isPaste && submitEnter)) {
-        if (text) localTab.ptyProc.write(text);
-        if (submitEnter) {
-          setTimeout(() => {
-            try { localTab.ptyProc.write('\r'); } catch {}
-          }, enterDelayMs);
+      const node = requireNode(body.nodeId, body.sshHost);
+      const tabId = String(body.tabId || '');
+      if (!/^[a-zA-Z0-9_-]{1,100}$/.test(tabId)) throw new InteractionError(400, '无效窗口');
+      const bound = resolveDocktermTarget({ tabId, nodeId: node.id });
+      const result = await queueInteraction(bound.host + '::' + bound.tmuxSess, async () => {
+        if (bound.inflight) await bound.inflight;
+        await refreshDocktermTab(bound, { tabId, sessionId: body.expectedSessionId || '', cwd: body.cwd || '' });
+        const terminal = body.intent === 'terminal';
+        if (bound.stale || bound.bindingError || !bound.tmuxAlive) throw new InteractionError(409, bound.bindingError || '无法核实窗口，请刷新后重试');
+        if (!terminal && (!bound.claudeRunning || !body.expectedSessionId || !body.expectedBinding ||
+            body.expectedSessionId !== bound.resolvedSessionId || body.expectedBinding !== bound.bindingToken)) {
+          throw new InteractionError(409, 'Claude 已退出或会话归属改变，请刷新后重试；未发送消息');
         }
-        sendJson(res, 200, { ok: true, via: 'pty' });
-        return;
-      }
-
-      const body64 = Buffer.from(isPaste ? text.slice(PASTE_START.length, -PASTE_END.length) : text, 'utf8').toString('base64');
-      // While Claude Code shows "Pasting…" it swallows Enter, and after a paste with image paths
-      // in it that Enter is dropped (= the message is never sent). So wait for the footer to clear;
-      // if it never does (e.g. a clipboard helper on the node that hangs), leave Enter out and report it.
-      const PASTE_WAIT_S = 8;
-      const py = `
-import base64, json, subprocess, time
-sess = "=" + ${JSON.stringify(tmuxSess)} + ":"
-raw = base64.b64decode(${JSON.stringify(body64)}).decode("utf-8", errors="ignore")
-is_paste = ${isPaste ? 'True' : 'False'}
-def pasting():
-    try:
-        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", sess], capture_output=True, text=True, timeout=2)
-    except Exception:
-        return False
-    tail = [l.strip() for l in r.stdout.splitlines() if l.strip()][-4:]
-    return any(l.startswith("Pasting\\u2026") or l.startswith("Pasting...") for l in tail)
-if raw:
-    if is_paste:
-        subprocess.run(["tmux", "set-buffer", "-b", "takt_dockterm", "--", raw], timeout=2)
-        subprocess.run(["tmux", "paste-buffer", "-p", "-d", "-b", "takt_dockterm", "-t", sess], timeout=2)
-    else:
-        subprocess.run(["tmux", "send-keys", "-t", sess, "-l", "--", raw], timeout=2)
-stuck = False
-waited = 0.0
-if ${submitEnter ? 'True' : 'False'}:
-    time.sleep(${(enterDelayMs / 1000).toFixed(3)})
-    if is_paste and raw:
-        t0 = time.time()
-        while pasting():
-            if time.time() - t0 > ${PASTE_WAIT_S}:
-                stuck = True
-                break
-            time.sleep(0.12)
-        waited = time.time() - t0
-        if not stuck and waited > 0.2:
-            time.sleep(0.15)
-    if not stuck:
-        subprocess.run(["tmux", "send-keys", "-t", sess, "Enter"], timeout=2)
-print(json.dumps({"stuck": stuck, "waited": round(waited, 2)}))
-`.trim();
-      const pyB64 = Buffer.from(py, 'utf8').toString('base64');
-      const r = await runCmd('ssh', [
-        ...DOCKTERM_SSH_OPTS,
-        targetHost,
-        `python3 -c "import base64;exec(base64.b64decode('${pyB64}'))"`,
-      ], 4500 + enterDelayMs + (isPaste && submitEnter ? PASTE_WAIT_S * 1000 + 1500 : 0));
-      let info = {};
-      try { info = JSON.parse(String(r.stdout || '').trim().split('\n').pop() || '{}'); } catch {}
-      sendJson(res, 200, { ok: r.exitCode === 0 && !info.stuck, via: 'tmux', stuck: Boolean(info.stuck), waited: info.waited || 0 });
+        if (terminal && bound.claudeRunning) throw new InteractionError(409, 'Claude 已在运行');
+        const input = {
+          tmuxSess: bound.tmuxSess, panePid: bound.panePid, claudePid: bound.claudePid,
+          sessionId: bound.resolvedSessionId, intent: terminal ? 'terminal' : 'chat',
+          text: String(body.text || ''), submitEnter: Boolean(body.submitEnter),
+          enterDelayMs: Math.max(60, Math.min(1500, Number(body.enterDelayMs) || 100)),
+        };
+        const script = Buffer.from(fs.readFileSync(path.join(__dirname, 'remote-input.py'), 'utf8')).toString('base64');
+        const data = Buffer.from(JSON.stringify(input)).toString('base64');
+        const r = await runCmd('ssh', [...DOCKTERM_SSH_OPTS, node.sshHost,
+          `python3 -c "import base64,sys;sys.argv=['-', '${data}'];exec(base64.b64decode('${script}'))"`], 30000);
+        try { return JSON.parse(r.stdout.trim().split('\n').pop()); }
+        catch { return { ok: false, delivered: null, error: '发送状态无法确认，请先查看终端，避免重复提交' }; }
+      });
+      sendJson(res, result.ok ? 200 : 409, result);
       return;
     }
 
@@ -4107,7 +4014,7 @@ print(json.dumps({"stuck": stuck, "waited": round(waited, 2)}))
     // API: One-click Heal SSH Tunnel + MCP + Syncthing across all enabled nodes
     if (req.method === 'POST' && u.pathname === '/api/heal') {
       try {
-        await fetch('http://127.0.0.1:18765/system-heal', { method: 'POST' });
+        await fetch(`http://127.0.0.1:${cfg.MCP_PORT}/system-heal`, { method: 'POST' });
       } catch {
         await ensureMacMcpDaemonRunning();
       }
@@ -4119,7 +4026,7 @@ print(json.dumps({"stuck": stuck, "waited": round(waited, 2)}))
     res.writeHead(404);
     res.end('Not found');
   } catch (err) {
-    sendJson(res, 500, { ok: false, error: err.message });
+    sendJson(res, err.status || 500, { ok: false, error: err.message });
   }
 });
 
@@ -4153,7 +4060,9 @@ wss.on('connection', (ws, _req, u) => {
   const cols = Number(u.searchParams.get('cols') || 120);
   const rows = Number(u.searchParams.get('rows') || 36);
 
-  const tab = getOrCreatePtyTab({ tabId, sessionId, title, cwd, resume, mode, nodeId, sshHost });
+  let tab;
+  try { tab = getOrCreatePtyTab({ tabId, sessionId, title, cwd, resume, mode, nodeId, sshHost }); }
+  catch (err) { ws.send(JSON.stringify({ type: 'input-error', error: err.message })); ws.close(1008); return; }
   tab.clients.add(ws);
 
   try {
@@ -4176,6 +4085,10 @@ wss.on('connection', (ws, _req, u) => {
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'input' && typeof msg.data === 'string') {
+        const binding = docktermTabs.get(`${tab.sshHost}::${sanitizeTmuxSessionId(tab.tabId)}`);
+        if (binding?.bindingError && !['\x03', '\x1b'].includes(msg.data)) {
+          ws.send(JSON.stringify({ type: 'input-error', error: binding.bindingError })); return;
+        }
         tab.ptyProc.write(msg.data);
       } else if (msg.type === 'resize' && msg.cols > 10 && msg.rows > 4) {
         tab.ptyProc.resize(Number(msg.cols), Number(msg.rows));

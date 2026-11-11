@@ -12,3 +12,5 @@ desktop/.swiftpm/
 *.sqlite-shm
 *.sqlite-wal
 mcp-token
+__pycache__/
+*.pyc

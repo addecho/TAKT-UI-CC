@@ -3474,6 +3474,7 @@
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <script src="/vendor/addon-web-links.js"></script>
+  <script src="/interaction-state.js"></script>
   <script>
     (() => {
       // ============================================================================
@@ -3922,6 +3923,7 @@
                     localWorkAlias: ot.localWorkAlias || 'work',
                     resume: true,
                     mode: ot.mode || 'claude',
+                    activate: !activeTabId,
                   });
                 }
               }
@@ -4389,10 +4391,11 @@
             const isListExpanded = expandedSessionLists.has(folderKey);
             const visibleSessions = isListExpanded
               ? folder.sessions
-              : folder.sessions.filter((sess, idx) => idx < SESSION_PREVIEW_LIMIT || tabs.has(sess.id) || activeTabId === sess.id);
+              : folder.sessions.filter((sess, idx) => idx < SESSION_PREVIEW_LIMIT || findSessionTab(sess.id, folder.nodeId));
             for (const sess of visibleSessions) {
-              const isOpen = tabs.has(sess.id);
-              const isCurrent = activeTabId === sess.id;
+              const sessionTab = findSessionTab(sess.id, sess.nodeId || folder.nodeId);
+              const isOpen = Boolean(sessionTab);
+              const isCurrent = sessionTab?.tabId === activeTabId;
 
               const item = document.createElement('div');
               item.className = `session-item${isCurrent ? ' active' : ''}`;
@@ -4406,7 +4409,7 @@
                 <span class="session-meta">${formatRelativeTime(sess.updatedAt)}</span>
                 <div class="session-actions">
                   <button class="session-act-btn session-rename-btn" title="重命名">${SVG_ICONS.edit}</button>
-                  <button class="session-act-btn danger session-del-btn" title="删除">${SVG_ICONS.trash}</button>
+                  <button class="session-act-btn danger session-del-btn" title="从列表隐藏（保留远端记录）">${SVG_ICONS.trash}</button>
                 </div>
               `;
 
@@ -4437,11 +4440,10 @@
 
               item.querySelector('.session-del-btn').addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (!confirm(`确定删除会话 "${sess.title}" 吗？`)) return;
-                if (tabs.has(sess.id)) {
-                  await closeTerminalTab(sess.id);
-                }
-                await fetch(`/api/sessions?id=${encodeURIComponent(sess.id)}&nodeId=${encodeURIComponent(sess.nodeId || folder.nodeId || '')}`, { method: 'DELETE' });
+                if (!confirm(`从列表隐藏会话 "${sess.title}"？远端记录和正在运行的任务会保留。`)) return;
+                const res = await fetch(`/api/sessions?id=${encodeURIComponent(sess.id)}&nodeId=${encodeURIComponent(sess.nodeId || folder.nodeId || '')}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (!res.ok || !data.ok) { showToast(data.error || '隐藏失败'); return; }
                 loadProjectTree();
               });
 
@@ -4567,6 +4569,10 @@
       // ============================================================================
       // 7. Center Panel: Dual-Engine (Native SwiftTerm + Web xterm) Terminal Manager
       // ============================================================================
+      function findSessionTab(sessionId, nodeId) {
+        return TaktInteractions.sessionTabs(tabs, nodeId, sessionId)[0];
+      }
+
       function openOrSwitchTerminalTab({
         tabId,
         sessionId,
@@ -4578,14 +4584,16 @@
         localWorkAlias = '',
         resume = true,
         mode = 'claude',
+        activate = true,
       }) {
-        if (tabs.has(tabId)) {
-          activateTerminalTab(tabId);
-          return;
-        }
-
         const node = getNodeInfo(nodeId);
         const resolvedNodeId = node.id;
+        const existing = findSessionTab(sessionId || tabId, resolvedNodeId);
+        if (existing) {
+          if (activate) activateTerminalTab(existing.tabId);
+          return;
+        }
+        if (tabs.has(tabId)) tabId = generateUUID();
         const resolvedBadge = nodeBadge || node.badge || 'KR-1';
         const resolvedSshHost = sshHost || node.sshHost || 'korea-claude';
         const resolvedAlias = localWorkAlias || node.localWorkAlias || 'work';
@@ -4642,7 +4650,7 @@
         };
 
         tabs.set(tabId, tabObj);
-        activateTerminalTab(tabId);
+        if (activate || !activeTabId) activateTerminalTab(tabId);
 
         if (terminalEngine === 'web' || !hasNativeHost) {
           ensureWebTerminalConnected(tabObj);
@@ -4698,6 +4706,8 @@
             if (msg.type === 'output' && typeof msg.data === 'string') {
               tabObj.term.write(msg.data);
               detectAndRenderInlineMediaFromOutput(tabObj, msg.data);
+            } else if (msg.type === 'input-error') {
+              showToast(msg.error || '窗口暂不可输入', 7000);
             } else if (msg.type === 'exit') {
               tabObj.exited = true;
               tabObj.term.write('\r\n\x1b[38;5;244m[TAKT] 会话已结束，按任意键重新连接…\x1b[0m\r\n');
@@ -4881,7 +4891,7 @@
           });
           btn.addEventListener('dblclick', (e) => {
             e.stopPropagation();
-            openRenameSessionModal(tabId, t.title, t.nodeId);
+            openRenameSessionModal(t.chat?.resolvedSessionId || t.sessionId, t.title, t.nodeId);
           });
           btn.querySelector('.term-tab-close').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -4950,8 +4960,23 @@
         return clean;
       }
 
+      const filesRequests = TaktInteractions.latestRequest();
+      let filesAbort = null;
       async function loadSessionFiles(cwd = currentFilesCwd, nodeId = currentFilesNodeId, opts = {}) {
         const silent = !!(opts && opts.silent);
+        const ticket = filesRequests.next();
+        if (filesAbort) filesAbort.abort();
+        filesAbort = new AbortController();
+        const contextChanged = cwd !== currentFilesCwd || nodeId !== currentFilesNodeId;
+        if (contextChanged) {
+          currentFileTree = []; selectedFilePath = ''; filesSig = '';
+          renderFileTree();
+          if (previewAbortCtrl) previewAbortCtrl.abort();
+          document.getElementById('previewBody').innerHTML = '<div class="preview-empty">点击文件查看预览</div>';
+          document.getElementById('previewTitle').textContent = '预览';
+          document.getElementById('previewTitle').title = '';
+          document.getElementById('previewActions').innerHTML = '';
+        }
         currentFilesCwd = cwd || '/root/work';
         currentFilesNodeId = nodeId || currentFilesNodeId || 'korea-claude';
         const activeNode = getNodeInfo(currentFilesNodeId);
@@ -4962,8 +4987,10 @@
           badgeEl.className = activeNode.id === 'korea-claude' ? 'machine-badge' : 'machine-badge secondary';
         }
         try {
-          const res = await fetch(`/api/files?cwd=${encodeURIComponent(currentFilesCwd)}&nodeId=${encodeURIComponent(currentFilesNodeId)}`);
+          const res = await fetch(`/api/files?cwd=${encodeURIComponent(currentFilesCwd)}&nodeId=${encodeURIComponent(currentFilesNodeId)}`, { signal: filesAbort.signal });
           const data = await res.json();
+          if (!filesRequests.current(ticket)) return;
+          if (!res.ok || !data.ok) throw new Error(data.error || '文件列表读取失败');
           if (data && data.localRoot) {
             document.getElementById('currentSessionCwdLabel').textContent = data.localRoot;
           }
@@ -5060,6 +5087,19 @@
         renderFileTree();
       });
 
+      async function referenceFileInActiveTab(filePath, nodeId = currentFilesNodeId) {
+        const tab = activeTabId && tabs.get(activeTabId);
+        if (!tab || tab.nodeId !== nodeId) { showToast('请切到文件所属节点的窗口'); return; }
+        try {
+          const res = await fetch('/api/file-reference', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, cwd: currentFilesCwd, nodeId }) });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || '文件尚未在远端就绪');
+          if (tabs.get(tab.tabId) !== tab || activeTabId !== tab.tabId) { showToast('窗口已切换，请在目标窗口重新引用文件'); return; }
+          sendTextToActiveTerminal(`${shellEscapePath(data.remotePath)} `);
+        } catch (err) { showToast(err.message, 8000); }
+      }
+
       function shellEscapePath(p) {
         if (/^[a-zA-Z0-9_./-]+$/.test(p)) return p;
         return `'${String(p).replace(/'/g, `'\\''`)}'`;
@@ -5116,8 +5156,7 @@
             // Quick button: send path into active terminal
             row.querySelector('.tree-send-btn').addEventListener('click', (e) => {
               e.stopPropagation();
-              sendTextToActiveTerminal(`${shellEscapePath(node.path)} `);
-              showToast(`已注入路径: ${node.name}`);
+              referenceFileInActiveTab(node.path, node.nodeId || currentFilesNodeId);
             });
 
             // Click row: toggle directory collapse OR preview file (with 0ms client-side filter for non-previewable / large files)
@@ -5155,6 +5194,7 @@
               syncNativeTerminalGeometry(); // Temporarily reveal HTML drop zone over native terminal
               e.dataTransfer.effectAllowed = 'copyMove';
               e.dataTransfer.setData('application/x-takt-path', node.path);
+              e.dataTransfer.setData('application/x-takt-node', node.nodeId || currentFilesNodeId);
               e.dataTransfer.setData('text/plain', shellEscapePath(node.path));
             });
 
@@ -5209,6 +5249,8 @@
       async function handleDropOntoDirectory(e, targetDirPath) {
         const internalSourcePath = e.dataTransfer.getData('application/x-takt-path');
         if (internalSourcePath) {
+          const sourceNodeId = e.dataTransfer.getData('application/x-takt-node');
+          if (sourceNodeId && sourceNodeId !== currentFilesNodeId) { showToast('不能跨节点移动文件'); return; }
           if (internalSourcePath === targetDirPath) return;
           const res = await fetch('/api/files/move', {
             method: 'POST',
@@ -5239,35 +5281,30 @@
       }
 
       async function uploadExternalFilesToDir(fileList, targetDirPath) {
+        const cwd = currentFilesCwd, nodeId = currentFilesNodeId;
         let uploaded = 0;
         for (const file of fileList) {
-          const base64 = await new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const res = String(reader.result || '');
-              resolve(res.includes(',') ? res.split(',')[1] : '');
-            };
-            reader.onerror = () => resolve('');
-            reader.readAsDataURL(file);
-          });
-          if (!base64) continue;
-          const res = await fetch('/api/files/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              fileName: file.name,
-              targetDirPath,
-              cwd: currentFilesCwd,
-              nodeId: currentFilesNodeId,
-              contentBase64: base64,
-            }),
-          });
-          const data = await res.json();
-          if (data.ok) uploaded++;
+          if (file.size > 10 * 1024 * 1024) { showToast(`${file.name} 超过 10 MB，请作为对话附件上传`); continue; }
+          try {
+            const base64 = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+              reader.onerror = () => reject(new Error('文件读取失败'));
+              reader.readAsDataURL(file);
+            });
+            const upload = overwrite => fetch('/api/files/upload', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fileName: file.name, targetDirPath, cwd, nodeId, contentBase64: base64, overwrite }),
+            });
+            let res = await upload(false), data = await res.json();
+            if (res.status === 409 && confirm(`目标已有 ${file.name}，是否覆盖？`)) { res = await upload(true); data = await res.json(); }
+            if (!res.ok || !data.ok) { showToast(data.error || '上传失败'); continue; }
+            uploaded++;
+          } catch (err) { showToast(err.message || '上传失败'); }
         }
-        if (uploaded > 0) {
-          showToast(`已上传 ${uploaded} 个文件至 ${targetDirPath}`);
-          await loadSessionFiles(currentFilesCwd, currentFilesNodeId);
+        if (uploaded) {
+          showToast(`已写入本机 ${uploaded} 个文件；引用时会检查远端是否可读`);
+          if (cwd === currentFilesCwd && nodeId === currentFilesNodeId) await loadSessionFiles(cwd, nodeId);
         }
       }
 
@@ -5317,7 +5354,8 @@
         terminalStage.classList.remove('drag-over');
         const taktPath = e.dataTransfer.getData('application/x-takt-path');
         const plain = e.dataTransfer.getData('text/plain');
-        const pathToInject = taktPath ? shellEscapePath(taktPath) : plain;
+        if (taktPath) { referenceFileInActiveTab(taktPath, e.dataTransfer.getData('application/x-takt-node') || currentFilesNodeId); return; }
+        const pathToInject = plain;
         syncNativeTerminalGeometry();
         const chatTab = activeTabId && tabs.has(activeTabId) ? tabs.get(activeTabId) : null;
         const dropped = Array.from(e.dataTransfer.files || []);
@@ -5439,7 +5477,7 @@
         const btnInject = document.getElementById('btnCardInjectPath');
         if (btnInject) {
           btnInject.addEventListener('click', () => {
-            sendTextToActiveTerminal(`${shellEscapePath(localDisplayPath)} `);
+            referenceFileInActiveTab(localDisplayPath);
             showToast(`已注入路径: ${name || localDisplayPath}`);
           });
         }
@@ -5540,6 +5578,7 @@
         const actionsEl = document.getElementById('previewActions');
         const bodyEl = document.getElementById('previewBody');
 
+        if (previewAbortCtrl) previewAbortCtrl.abort();
         const baseName = filePath.split('/').pop().replace(/:\d+(?::\d+)?$/, '');
         const extMatch = baseName.toLowerCase().match(/(\.[a-z0-9_-]+)$/);
         const ext = extMatch ? extMatch[1] : '';
@@ -5912,10 +5951,8 @@
           const data = await res.json();
           newProjectDialog.close();
           if (data.ok) {
-            if (tabs.has(renamingSessionId)) {
-              tabs.get(renamingSessionId).title = name;
-              renderTabBar();
-            }
+            for (const tab of TaktInteractions.sessionTabs(tabs, renamingSessionNodeId, renamingSessionId)) tab.title = name;
+            renderTabBar();
             showToast(`会话已重命名为: ${name}`);
             await loadProjectTree();
           }
@@ -6509,7 +6546,7 @@
         return `${docktermMoveKeys(i - (ask.cursorRow || 0))}${clean}\r`;
       }
 
-      async function sendDocktermRawInput(tabObj, rawText, submitEnter = false) {
+      async function sendDocktermRawInput(tabObj, rawText, submitEnter = false, intent = 'chat') {
         if (!tabObj) return;
         const text = String(rawText || '');
         // Long or multi-line text goes in as one bracketed paste; Enter follows once Claude Code
@@ -6527,7 +6564,7 @@
         }
         // An ended local pty (ssh dropped) would swallow the input: go through tmux on the node instead.
         // A submitted paste always goes through the node, which holds Enter back until Claude Code is done pasting.
-        if (!(usePaste && submitEnter) && tabObj.ws && tabObj.ws.readyState === WebSocket.OPEN && !tabObj.exited) {
+        if (tabObj.viewMode !== 'chat' && !(usePaste && submitEnter) && tabObj.ws && tabObj.ws.readyState === WebSocket.OPEN && !tabObj.exited) {
           if (payload) tabObj.ws.send(JSON.stringify({ type: 'input', data: payload }));
           if (submitEnter) {
             setTimeout(() => {
@@ -6540,11 +6577,15 @@
           const res = await fetch('/api/chat-input', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tabId: tabObj.tabId, nodeId: tabObj.nodeId, sshHost: tabObj.sshHost, text: payload, submitEnter, enterDelayMs }),
+            body: JSON.stringify({ tabId: tabObj.tabId, nodeId: tabObj.nodeId, sshHost: tabObj.sshHost,
+              cwd: tabObj.cwd, expectedSessionId: tabObj.chat?.resolvedSessionId || '',
+              expectedBinding: tabObj.chat?.bindingToken || '', intent, text: payload, submitEnter, enterDelayMs }),
           });
-          return await res.json();
+          const result = await res.json();
+          if (!result.ok) showToast(result.error || '发送失败', 7000);
+          return result;
         } catch {
-          return { ok: false };
+          return { ok: false, delivered: null, error: '发送状态未知，请先查看终端，避免重复提交' };
         }
       }
 
@@ -6937,11 +6978,23 @@
               ${imgs.length ? `<div class="reading__images">${imgs.map((a) => `<span class="reading__thumb"><img class="is-local" src="${escapeHtml(a.url)}" alt=""></span>`).join('')}</div>` : ''}
               ${files.length ? `<div class="reading__files">${files.map((a) => `<span class="reading__file"><b>${escapeHtml(dtExtLabel(a.name))}</b>${escapeHtml(a.name)}</span>`).join('')}</div>` : ''}
               ${(p.display ?? p.text) ? `<div class="reading__user-bubble">${escapeHtml(p.display ?? p.text)}</div>` : ''}
-              <span class="reading__meta">${p.failed ? '没有提交 · Claude Code 停在「Pasting…」，切到终端看看输入框'
+              <span class="reading__meta">${p.failed ? escapeHtml(p.failed)
                 : p.queued ? '排队中 · Claude 完成当前步骤后处理' : '发送中…'}</span>
+              ${p.failed && p.attempt ? `<button class="btn" data-recover-attempt="${p.id}">恢复文字和附件（发送前先核对终端）</button>` : ''}
             </div>
           </div>`;
         }).join('');
+        dtPendingEl.querySelectorAll('[data-recover-attempt]').forEach(button => button.addEventListener('click', () => {
+          const entry = c.pending.find(p => p.id === button.dataset.recoverAttempt);
+          if (!entry?.attempt || activeChatTab() !== t) return;
+          const a = entry.attempt;
+          const draft = dtDrafts.get(t.tabId) || '';
+          dtInput.value = draft ? draft + '\n\n' + a.text : a.text;
+          dtDrafts.set(t.tabId, dtInput.value);
+          dtAttachments.set(t.tabId, [...a.attachments, ...dtAttachList(t).filter(x => !a.attachments.includes(x))]);
+          dtDraftRevision.set(t.tabId, (dtDraftRevision.get(t.tabId) || 0) + 1);
+          renderDocktermAttachments(t); autoGrowDocktermComposer(); updateDocktermSendState();
+        }));
       }
 
       function renderDocktermChrome(t) {
@@ -7152,7 +7205,20 @@
       }
 
       function applyDocktermData(t, data) {
+        if (data.tabId !== t.tabId) return;
         const c = ensureChatState(t);
+        c.bindingError = data.bindingError || '';
+        c.bindingToken = data.bindingToken || '';
+        if (data.bindingSource && data.resolvedSessionId) {
+          if (c.resolvedSessionId && c.resolvedSessionId !== data.resolvedSessionId) {
+            c.previousAttempts = [...(c.previousAttempts || []), ...c.pending];
+            c.pending = []; // old attempts stay retained, never acknowledged by the resumed conversation
+          }
+          t.sessionId = data.resolvedSessionId;
+          t.resume = Boolean(data.jsonlPath);
+          const actual = foldersData.filter(f => f.nodeId === t.nodeId).flatMap(f => f.sessions || []).find(x => x.id === t.sessionId);
+          if (actual?.title) { t.title = cleanSessionTitle(actual.title, actual.id); renderTabBar(); }
+        }
         const prevStatus = c.status;
         const prevCmd = claudeLaunchCommand(t);
         let added = [];
@@ -7191,20 +7257,20 @@
           const newUsers = added.filter((m) => m.role === 'user');
           const norm = (x) => String(x || '').replace(/\s+/g, ' ').trim();
           for (const u of newUsers) {
-            const i = c.pending.findIndex((p) => norm(p.text) === norm(u.text) || (u.ts && u.ts >= p.at - 3000));
+            const i = c.pending.findIndex((p) => norm(p.text) === norm(u.text));
             if (i >= 0) c.pending.splice(i, 1);
           }
           // Claude takes queued messages as soon as it is idle: one that is still missing from the transcript
           // after Claude has been idle for a while never arrived (or is still sitting in Claude's input box)
           let lost = 0;
           c.pending = c.pending.filter((p) => {
-            if (p.failed) return now - p.failedAt < 120000;
+            if (p.failed) return true; // keep failed content recoverable until explicitly dismissed
             if (p.inflight) return true; // the node is still waiting for Claude Code to finish the paste
             if (!c.stale && now - Math.max(p.sentAt || p.at, c.lastBusyAt || 0) > DT_PENDING_IDLE_MS) {
               if (c.claudeRunning) lost += 1;
-              return false;
+              p.failed = '尚未在会话记录中确认，请核对终端后恢复草稿'; p.failedAt = now;
             }
-            return now - p.at < (p.queued ? 15 * 60000 : 60000);
+            return true;
           });
           if (lost && activeChatTab() === t) showToast(lost === 1 ? '有一条消息没有出现在对话记录里，可能还停在 Claude 的输入框（切到终端看看）'
             : `有 ${lost} 条消息没有出现在对话记录里，可能还停在 Claude 的输入框（切到终端看看）`, 6000);
@@ -7725,12 +7791,12 @@
         }
       }, true);
 
-      function launchClaudeInActiveTab() {
+      async function launchClaudeInActiveTab() {
         if (!activeTabId || !tabs.has(activeTabId)) return;
         const t = tabs.get(activeTabId);
         const cmd = claudeLaunchCommand(t, { forShell: true });
-        sendDocktermRawInput(t, cmd, true);
-        showToast(`已在远端运行：${cmd}`);
+        const result = await sendDocktermRawInput(t, cmd, true, 'terminal');
+        if (result?.ok) showToast(`已在远端运行：${cmd}`);
         kickDocktermPoll(1200);
       }
 
@@ -7743,7 +7809,7 @@
       function updateDocktermSendState() {
         const t = activeChatTab();
         const atts = t ? dtAttachList(t) : [];
-        dtSendBtn.disabled = dtSubmitting || (!dtInput.value.trim() && !atts.length);
+        dtSendBtn.disabled = dtSubmitting || Boolean(t?.chat?.sending) || (!dtInput.value.trim() && !atts.length);
         const label = dtSendBtn.querySelector('span');
         if (label) label.textContent = dtSubmitting ? '上传中…' : '发送';
       }
@@ -7938,10 +8004,12 @@
         addDocktermAttachments(files);
       });
 
+      const dtDraftRevision = new Map();
       async function submitDocktermComposerPrompt() {
         const t = activeChatTab();
         if (!t || dtSubmitting) return;
         const c = ensureChatState(t);
+        if (c.sending) return;
         const typed = dtInput.value.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
         const isCommand = typed.startsWith('/');
         const atts = isCommand ? [] : dtAttachList(t).slice();
@@ -7967,10 +8035,13 @@
         }
         const paths = atts.map((a) => a.remotePath);
         const text = paths.length ? `${typed}${typed ? '\n\n' : ''}${paths.map((p) => DT_ATTACH_LABEL + p).join('\n')}` : typed;
-        if (c.loaded && !c.claudeRunning && !c.stale) {
-          // Without Claude the text would be executed by the shell
-          if (!confirm('这个标签页里似乎没有运行 Claude，消息会直接输入到 shell。\n\n仍然发送吗？（建议先点「启动 Claude」）')) return;
+        if (!c.loaded || !c.claudeRunning || c.stale || !c.bindingToken || c.bindingError) {
+          showToast(c.bindingError || '请等待会话核实，或先启动 Claude；文字已保留');
+          kickDocktermPoll(100); return;
         }
+        c.sending = true;
+        const attempt = { text: typed, attachments: atts, revision: dtDraftRevision.get(t.tabId) || 0 };
+
 
         if (typed.trim()) {
           const hist = dtHistory.get(t.tabId) || [];
@@ -7989,7 +8060,7 @@
         updateDocktermSendState();
 
         const isPicker = DOCKTERM_PICKER_SLASH_RE.test(text);
-        const pendingId = `p${Date.now()}`;
+        const pendingId = generateUUID();
         if (!isCommand) {
           c.pending.push({
             id: pendingId,
@@ -7999,6 +8070,7 @@
             queued: c.status === 'working',
             inflight: true,
             at: Date.now(),
+            attempt,
           });
           renderDocktermPending(t);
           renderDocktermChrome(t);
@@ -8006,13 +8078,21 @@
         dtPinned = true;
         requestAnimationFrame(scrollDocktermToBottom);
 
-        const sent = await sendDocktermRawInput(t, text, true);
-        const sentEntry = c.pending.find((x) => x.id === pendingId);
+        let sent;
+        try { sent = await sendDocktermRawInput(t, text, true); }
+        finally { c.sending = false; if (activeChatTab() === t) updateDocktermSendState(); }
+        const sentEntry = c.pending.find(x => x.id === pendingId);
         if (sentEntry) Object.assign(sentEntry, { inflight: false, sentAt: Date.now() });
-        if (sent && sent.stuck) {
-          if (sentEntry) Object.assign(sentEntry, { failed: 'pasting', failedAt: Date.now() });
-          if (activeChatTab() === t) renderDocktermPending(t);
-          showToast('Claude Code 一直显示「Pasting…」，消息没有提交。切到终端看看它的输入框', 6000);
+        if (!sent?.ok) {
+          if (sentEntry) Object.assign(sentEntry, { failed: sent?.error || '发送失败', failedAt: Date.now() });
+          // Unknown / partial delivery must be checked in the terminal before the user retries.
+          if (sent?.delivered === false || sent?.delivered === undefined) {
+            const restored = TaktInteractions.restoreFailedAttempt(dtDrafts.get(t.tabId) || '', dtAttachList(t), dtDraftRevision.get(t.tabId) || 0, attempt);
+            dtDrafts.set(t.tabId, restored.draft); dtAttachments.set(t.tabId, restored.attachments);
+            if (activeChatTab() === t) { dtInput.value = restored.draft; renderDocktermAttachments(t); autoGrowDocktermComposer(); }
+          }
+          if (activeChatTab() === t) { renderDocktermPending(t); updateDocktermSendState(); }
+          return;
         }
 
         if (isPicker) {
@@ -8024,7 +8104,7 @@
       }
 
       dtInput.addEventListener('input', () => {
-        if (activeTabId) dtDrafts.set(activeTabId, dtInput.value);
+        if (activeTabId) { dtDrafts.set(activeTabId, dtInput.value); dtDraftRevision.set(activeTabId, (dtDraftRevision.get(activeTabId) || 0) + 1); }
         if (activeTabId && dtHistCursor.has(activeTabId)) {
           const hist = dtHistory.get(activeTabId) || [];
           if (dtInput.value !== hist[dtHistCursor.get(activeTabId)]) dtHistCursor.delete(activeTabId);

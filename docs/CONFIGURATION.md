@@ -8,6 +8,8 @@ All settings are optional — defaults work out of the box. Set variables in you
 |---|---|---|---|
 | `TAKT_HOME` | `~/.takt-ai` | all | Data directory (see layout below) |
 | `TAKT_PORT` (or `PORT`) | `3080` | workbench, desktop app | Web UI / REST / WebSocket port. Always bound to `127.0.0.1`. |
+| `TAKT_MANAGED_SERVICES` | unset | workbench | `1` disables the workbench's MCP child-process supervisor when launchd/systemd or isolated tests supervise the services. |
+| `TAKT_SKIP_OPTIONAL_SERVICES` | unset | start script | `1` skips starting Homebrew Syncthing for isolated tests and externally managed installations. |
 | `TAKT_MCP_PORT` (or `MAC_MCP_PORT`) | `18765` | MCP server, tunnels | Local MCP port; the same number is forwarded on every server (`ssh -R`). |
 | `TAKT_MCP_HOST` | `127.0.0.1` | MCP server | Bind address. **Do not change** unless you fully understand [the risk](SECURITY.md). |
 | `TAKT_MCP_TOKEN` | *(generated)* | MCP server, provisioning | Override the bearer token instead of using `$TAKT_HOME/mcp-token`. |

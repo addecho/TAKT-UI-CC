@@ -98,9 +98,21 @@ Two interchangeable engines (switch in the top bar):
 
 Right-hand tree and preview use the **local mirror** only (`/api/files`, `/api/file-content`, `/api/raw-file`). Paths coming from the terminal (`/home/dev/work/x/y.png`) are mapped to the mirror by comparing against each node's `remoteWorkDir`. Preview limits: images ≤ 12 MB, HTML ≤ 2 MB, code/text ≤ 200 KB, binaries skipped. Mutating endpoints (`move`, `upload`, `mkdir`) refuse any path outside `$TAKT_HOME`.
 
+## 4a. Conversation and file interaction guarantees
+
+Conversation ownership is `(node, Claude session)`, independently of the stable tab/tmux ID. The live PID registry in `~/.claude/sessions/<pid>.json` is authoritative; explicit CLI session arguments support older clients. The inspector never selects a transcript by modification time. An unverified or duplicate binding is unavailable for chat input. Refreshing the sidebar restores tabs without changing the current selection.
+
+Chat submissions carry the last observed binding token. The server serializes complete submissions per pane, rechecks the binding, and executes `remote-input.py` over SSH. That script takes a per-pane lock, uses a unique paste buffer, and checks the live process/session before the paste and delayed Enter. Chat input is refused when Claude has exited. Starting Claude is a separate, explicit terminal action. Raw terminal mode remains an interactive shell, not a chat safety boundary. Failed submissions retain their original text and attachments; unconfirmed or partial delivery is never automatically retried.
+
+`DELETE /api/sessions` hides the selected **node-scoped** record in SQLite. It preserves remote JSONL and running processes. Closing a tab (`DELETE /api/tabs`) is a separate action that terminates its exact tmux window; the close button states this behavior. Rename and title overrides are node-scoped too.
+
+File writes validate both path boundaries and resolved symlinks inside the selected node's mirror. File-tree uploads are limited to 10 MB, committed atomically, and return 409 for existing names until overwrite is confirmed. Chat attachments retain their separate 50 MB streaming upload path directly to the node. A local upload response does not imply remote delivery: inserting a tree file calls `POST /api/file-reference`, which verifies the remote file's SHA-256 before returning its **remote** path. Directory checks confirm existence, not synchronization of every child. File list and preview requests discard superseded responses after switching projects.
+
+Run `npm test` for isolated Node/HTTP/browser-state and Python process-binding/input regressions. Tests use temporary data and mocked remote processes; they never submit prompts to a real Claude account. `bash scripts/smoke-test.sh` uses separate ports and skips optional system services.
+
 ## 5. MCP server and watchdog
 
-`mcp-server/server.js --http` speaks MCP (JSON-RPC 2.0) on `POST /mcp` (also SSE: `GET /sse` + `POST /messages`). The `?node=<id>` query parameter tells it which node is calling so remote paths (`<remoteWorkDir>/foo`) are translated to that node's local mirror. Other endpoints: `/health`, `/system-status` (JSON for the status bar), `POST /system-heal`, `/viewer` (3D viewer), `/work/*` (read-only files).
+`mcp-server/server.js --http` speaks MCP (JSON-RPC 2.0) on `POST /mcp` (also SSE: `GET /sse` + `POST /messages`). The `?node=<id>` query parameter is scoped to each asynchronous request so concurrent calls cannot switch another call's node; remote paths (`<remoteWorkDir>/foo`) are translated to that node's local mirror. Other endpoints: `/health`, `/system-status` (JSON for the status bar), `POST /system-heal`, `/viewer` (3D viewer), `/work/*` (read-only files).
 
 Every 5 s the **watchdog**:
 

@@ -21,6 +21,7 @@
 
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
@@ -57,7 +58,7 @@ const PATHS = {
 
 fs.mkdirSync(MAC_WORK_DIR, { recursive: true });
 
-let activeMcpNodeId = null;
+const mcpNodeContext = new AsyncLocalStorage();
 
 function loadConfiguredNodes() {
   try {
@@ -84,11 +85,12 @@ function loadConfiguredNodes() {
   ];
 }
 
-function getActiveNodeConfig(nodeId = activeMcpNodeId) {
+function getActiveNodeConfig(nodeId = mcpNodeContext.getStore() || null) {
   const nodes = loadConfiguredNodes();
   if (nodeId) {
     const found = nodes.find((n) => n.id === nodeId || n.sshHost === nodeId || n.localWorkAlias === nodeId);
     if (found) return found;
+    throw new Error('Unknown MCP node');
   }
   return nodes[0];
 }
@@ -109,13 +111,6 @@ function resolveWorkPath(inputPath = '') {
     const rest = p.slice(cfg.WORKSPACE_LINK_DIR.length).replace(/^\/+/, '');
     return path.resolve(cfg.TAKT_HOME, rest);
   }
-  for (const n of loadConfiguredNodes()) {
-    const rDir = (n.remoteWorkDir || '').replace(/\/+$/, '');
-    if (rDir && rDir !== '/root/work' && (p === rDir || p.startsWith(rDir + '/'))) {
-      const rRel = p.slice(rDir.length).replace(/^\/+/, '');
-      return path.join(n.localWorkDir || primaryLocalDir, rRel);
-    }
-  }
   if (p === primaryRemoteDir || p.startsWith(primaryRemoteDir + '/')) {
     rel = p.slice(primaryRemoteDir.length).replace(/^\/+/, '');
   } else if (p === LINUX_WORK_DIR || p.startsWith(LINUX_WORK_DIR + '/')) {
@@ -130,14 +125,6 @@ function resolveWorkPath(inputPath = '') {
 
   if (rel !== null) {
     const cand = path.join(primaryLocalDir, rel);
-    if (fs.existsSync(cand)) return cand;
-    // Also check across all other configured localWorkDirs (work, work2, work3...) if the file exists there
-    for (const n of loadConfiguredNodes()) {
-      if (n.localWorkDir) {
-        const alt = path.join(n.localWorkDir, rel);
-        if (fs.existsSync(alt)) return alt;
-      }
-    }
     return cand;
   }
 
@@ -1553,10 +1540,9 @@ if (process.argv.includes('--stdio')) {
 
     const urlObj = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
 
-    // Loopback / SSH reverse-tunnel requests (127.0.0.1 / localhost / ::1) are trusted.
-    // Only enforce token if TAKT_REQUIRE_MCP_TOKEN=1 is explicitly set.
+    // SSH loopback identifies the transport, not the caller. MCP always requires authentication.
     const isMcpEndpoint = urlObj.pathname === '/mcp' || urlObj.pathname === '/messages' || urlObj.pathname === '/sse';
-    if (isMcpEndpoint && process.env.TAKT_REQUIRE_MCP_TOKEN === '1') {
+    if (isMcpEndpoint) {
       const auth = String(req.headers.authorization || '');
       const supplied = auth.startsWith('Bearer ') ? auth.slice(7).trim() : String(req.headers['x-takt-token'] || urlObj.searchParams.get('token') || '');
       const a = Buffer.from(supplied);
@@ -1727,14 +1713,7 @@ if (process.argv.includes('--stdio')) {
           const clientId = urlObj.searchParams.get('clientId');
           const sseEntry = clientId ? sseClients.get(clientId) : null;
           const reqNodeId = urlObj.searchParams.get('node') || req.headers['x-takt-node'] || (sseEntry && sseEntry.nodeId) || null;
-          const prevNode = activeMcpNodeId;
-          activeMcpNodeId = reqNodeId;
-          let resp;
-          try {
-            resp = await handleJsonRpc(payload);
-          } finally {
-            activeMcpNodeId = prevNode;
-          }
+          const resp = await mcpNodeContext.run(reqNodeId, () => handleJsonRpc(payload));
           if (sseEntry && sseEntry.res && resp) {
             sseEntry.res.write(`event: message\ndata: ${JSON.stringify(resp)}\n\n`);
             res.writeHead(202);
@@ -1948,7 +1927,7 @@ try:
     req = urllib.request.Request(
         "http://127.0.0.1:${PORT}/mcp",
         data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + ${JSON.stringify(MCP_TOKEN)}},
         method="POST",
     )
     r = urllib.request.urlopen(req, timeout=1.5).read().decode()
@@ -2135,10 +2114,10 @@ if os.path.exists("/usr/local/bin/mac-industrial-mcp-client"):
         "type": "stdio",
         "command": "/usr/local/bin/mac-industrial-mcp-client",
         "args": [],
-        "env": {"TAKT_NODE_ID": "${node.id}", "TAKT_HEALED_AT": str(int(time.time()))}
+        "env": {"TAKT_NODE_ID": "${node.id}", "TAKT_HEALED_AT": str(int(time.time())), "TAKT_MCP_TOKEN": ${JSON.stringify(MCP_TOKEN)}}
     }
 else:
-    cfg["mcpServers"]["mac-industrial"] = {"type": "http", "url": mcp_url}
+    cfg["mcpServers"]["mac-industrial"] = {"type": "http", "url": mcp_url, "headers": {"Authorization": "Bearer " + ${JSON.stringify(MCP_TOKEN)}}}
 if os.path.exists("/usr/local/bin/instabox-computer-use"):
     cfg["mcpServers"]["open-computer-use"] = {
         "type": "stdio",
