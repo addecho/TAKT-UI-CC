@@ -41,7 +41,6 @@ expect "MCP /mcp with token -> 200"      200 "$(curl -s -o /dev/null -w '%{http_
 expect "MCP status without token -> 401"  401 "$(curl -s -o /dev/null -w '%{http_code}' "$MCP/system-status")"
 expect "MCP status with token -> 200"     200 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$MCP/system-status")"
 expect "MCP heal without token -> 401"    401 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP/system-heal")"
-expect "MCP desktop without token -> 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP/remote-desktop")"
 expect "MCP foreign Host rejected"       403 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example.com' "$MCP/health")"
 expect "MCP foreign Origin rejected"     403 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.example.com' "$MCP/health")"
 

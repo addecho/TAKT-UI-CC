@@ -19,7 +19,7 @@ test('actual file loader discards an earlier response after switching projects',
   const pending = [], elements = new Map();
   const c = vm.createContext({ TaktInteractions, AbortController, currentFilesCwd: '', currentFilesNodeId: 'N',
     filesSig: '', filesPending: false, currentFileTree: [], selectedFilePath: '', previewAbortCtrl: null,
-    getNodeInfo: () => ({ id: 'N', badge: 'AWS' }), toLocalMacPath: x => x,
+    getNodeInfo: () => ({ id: 'N', badge: 'AWS' }), toLocalPath: x => x,
     document: { getElementById: id => { if (!elements.has(id)) elements.set(id, {}); return elements.get(id); } },
     fetch: url => new Promise(resolve => pending.push({ url, resolve })), filesUserBusy: () => false,
     renderFileTree: noop, ensureFilesLive: noop, console });
@@ -49,7 +49,7 @@ test('cancelled file requests are normal and do not produce console errors', asy
   const errors = [], elements = new Map();
   const c = vm.createContext({ TaktInteractions, AbortController, currentFilesCwd: '', currentFilesNodeId: 'N',
     filesSig: '', filesPending: false, currentFileTree: [], selectedFilePath: '', previewAbortCtrl: null,
-    getNodeInfo: () => ({ id: 'N' }), toLocalMacPath: x => x,
+    getNodeInfo: () => ({ id: 'N' }), toLocalPath: x => x,
     document: { getElementById: id => { if (!elements.has(id)) elements.set(id, {}); return elements.get(id); } },
     fetch: async () => { throw Object.assign(new Error('cancelled'), { name: 'AbortError' }); },
     renderFileTree: noop, console: { error: message => errors.push(message) } });
