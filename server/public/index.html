@@ -3235,7 +3235,7 @@
                     rows="1"
                     placeholder="给 Claude 发消息… 输入 / 查看命令，可粘贴或拖入图片、文件"
                   ></textarea>
-                  <button type="button" class="composer__suggest" id="docktermSuggestBtn" tabindex="-1" title="Claude Code 猜你接下来要说的话，按 Tab 填入输入框" hidden><kbd>Tab</kbd>填入</button>
+                  <button type="button" class="composer__suggest" id="docktermSuggestBtn" tabindex="-1" title="Claude Code 的下一步建议；点击或按 Tab 填入，不会自动发送" hidden><kbd>Tab</kbd>填入</button>
                   <div class="composer__foot">
                     <span class="composer__hints"><kbd>↵</kbd> 发送 · <kbd>⇧↵</kbd> 换行 · <kbd>/</kbd> 命令 · <kbd>↑</kbd> 上一条 · <kbd>Esc</kbd> 中断</span>
                     <div class="composer__actions">
@@ -7832,14 +7832,14 @@
       // Claude Code's prompt suggestion for this tab: only while Claude waits for input and nothing of ours is in flight
       function docktermSuggestion(t) {
         const c = t && t.chat;
-        if (!c || !c.suggestion || c.stale || !c.claudeRunning || c.status !== 'idle') return '';
+        if (!c || !c.suggestion || c.stale || c.bindingError || c.sending || !c.claudeRunning || c.status !== 'idle') return '';
         if (Date.now() < (c.suggestionHoldUntil || 0) || c.pending.some((p) => !p.failed)) return '';
         return c.suggestion;
       }
 
       function updateDocktermSuggestion() {
         const t = activeChatTab();
-        const s = !dtInput.value ? docktermSuggestion(t) : '';
+        const s = !dtInput.value && (!t || !dtAttachList(t).length) ? docktermSuggestion(t) : '';
         dtComposerBox.classList.toggle('has-suggestion', Boolean(s));
         dtSuggestBtn.hidden = !s;
         if (s) dtSuggestBtn.style.top = `${dtInput.offsetTop + 1}px`;
@@ -7847,7 +7847,8 @@
       }
 
       function acceptDocktermSuggestion() {
-        const s = dtInput.value ? '' : docktermSuggestion(activeChatTab());
+        const t = activeChatTab();
+        const s = dtInput.value || (t && dtAttachList(t).length) ? '' : docktermSuggestion(t);
         if (!s) return false;
         dtInput.value = s;
         dtInput.focus();

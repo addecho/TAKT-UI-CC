@@ -189,3 +189,30 @@ test('missing spinner never borrows historical completion time; stale status doe
   t.chat.stale = true; c.renderDocktermLive(t); assert.equal(c.dtLiveText.textContent, '连接暂不可用 · 执行状态待确认');
   t.chat.tail = ''; c.renderDocktermLive(t); assert.equal(c.dtLiveDetails.hidden, true);
 });
+
+function suggestionFixture() {
+  const t = { tabId: 'A', chat: { suggestion: 'show the summary', status: 'idle', claudeRunning: true, pending: [] } };
+  const atts = [], classes = new Map(), events = [];
+  const c = vm.createContext({ activeChatTab: () => t, dtAttachList: () => atts,
+    dtInput: { value: '', offsetTop: 0, placeholder: '', focus: noop, setSelectionRange: noop, dispatchEvent: e => events.push(e.type) },
+    dtComposerBox: { classList: { toggle: (name, value) => classes.set(name, value) } },
+    dtSuggestBtn: { hidden: true, style: {} }, DT_PLACEHOLDER: 'Write a message', Event: class { constructor(type) { this.type = type; } } });
+  vm.runInContext(section('      function docktermSuggestion(', '      function insertIntoDocktermComposer('), c);
+  return { c, t, atts, events };
+}
+test('next-step suggestion is a placeholder; accepting fills draft without submitting', () => {
+  const { c, events } = suggestionFixture(); c.updateDocktermSuggestion();
+  assert.equal(c.dtInput.value, ''); assert.equal(c.dtInput.placeholder, 'show the summary'); assert.equal(c.dtSuggestBtn.hidden, false);
+  assert.equal(c.acceptDocktermSuggestion(), true); assert.equal(c.dtInput.value, 'show the summary'); assert.deepEqual(events, ['input']);
+  c.updateDocktermSuggestion(); assert.equal(c.dtSuggestBtn.hidden, true);
+});
+test('suggestions preserve typed text and attachments and stay hidden during sending, stale or other sessions', () => {
+  const { c, t, atts } = suggestionFixture();
+  c.dtInput.value = 'my draft'; c.updateDocktermSuggestion(); assert.equal(c.dtSuggestBtn.hidden, true);
+  assert.equal(c.acceptDocktermSuggestion(), false); assert.equal(c.dtInput.value, 'my draft'); c.dtInput.value = '';
+  atts.push({ name: 'report.pdf' }); c.updateDocktermSuggestion(); assert.equal(c.dtSuggestBtn.hidden, true); assert.equal(c.acceptDocktermSuggestion(), false); atts.pop();
+  for (const change of [{ stale: true }, { sending: true }, { bindingError: 'changed session' }, { claudeRunning: false }, { status: 'working' }, { pending: [{ text: 'inflight' }] }, { suggestionHoldUntil: Date.now() + 60000 }]) {
+    const old = { ...t.chat }; Object.assign(t.chat, change); assert.equal(c.docktermSuggestion(t), ''); t.chat = old;
+  }
+  assert.equal(c.docktermSuggestion({ chat: { ...t.chat, suggestion: '' } }), '');
+});

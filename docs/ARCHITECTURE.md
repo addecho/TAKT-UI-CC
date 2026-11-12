@@ -136,3 +136,7 @@ A successful terminal write is distinct from a confirmed transcript record. Pend
 ### Live execution card
 
 The conversation execution card displays a generic working state and, when present, the duration from Claude's active spinner. Terminal screen tails are not turn-scoped replies or a thinking transcript: they remain available only in a collapsed, labeled terminal-details disclosure. Details close on tab/session/transcript/turn changes and after work finishes. Conversation replies and tool calls continue to come from the bound session's JSONL records. This presentation does not change sent prompts or remote task control.
+
+### Next-step suggestions
+
+Claude Code's dim next-prompt text exists in its terminal screen, not its JSONL reply history. The bound pane's styled input row may supply an idle-only suggestion to the conversation composer. It remains placeholder text until the user clicks the fill button or presses Tab; acceptance only edits the draft, never submits it. Typed text, selected attachments, active sends, pending messages, stale connections and binding errors suppress suggestions. Normal input rows and built-in placeholder hints are excluded from screen parsing.
