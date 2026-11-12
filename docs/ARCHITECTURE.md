@@ -128,3 +128,7 @@ See [SECURITY.md](SECURITY.md). In short: both HTTP servers listen on loopback o
 ## 7. Process model
 
 `scripts/start.sh` launches `mcp-server` and `workbench` as detached processes (new session via `setsid`), writes pid files to `$TAKT_HOME/run/` and logs to `$TAKT_HOME/logs/`. The workbench also supervises the MCP server (restarts it if `/system-status` stops answering).
+
+### Transcript acknowledgment
+
+A successful terminal write is distinct from a confirmed transcript record. Pending messages match the same conversation's user records, keeping attachment paths and ignoring only Claude Code's standalone `pasted_content` wrappers and whitespace. Existing record IDs and older timestamps cannot acknowledge a new attempt. Every poll reconciles loaded rows, including records received while the send request was in flight. Idle time alone never marks delivery as failed or retries it; a delayed record gets a neutral unconfirmed notice and manual recovery. Explicit transport failures retain the recoverable text and attachments.

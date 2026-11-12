@@ -113,3 +113,46 @@ test('actual late failure preserves a newer draft and keeps the complete old att
   assert.equal(c.dtInput.value, 'new draft'); assert.equal(chat.pending[0].attempt.attachments[0], attachment);
   assert.equal(chat.sending, false);
 });
+
+function pendingPoll({ pending, messages, status = 'idle', stale = false }) {
+  const t = { tabId: 'W', nodeId: 'N', sessionId: 'S' };
+  const chat = { epoch: 'epoch', ver: 1, pending, messages, resolvedSessionId: 'S', status: 'idle' };
+  const c = vm.createContext({ TaktInteractions, DT_PENDING_WAIT_MS: 30000,
+    ensureChatState: () => chat, activeChatTab: () => null,
+    renderTabBar: noop, claudeLaunchCommand: () => '',
+    mergeDocktermMessages: () => ({ added: [], updated: [] }) });
+  vm.runInContext(section('      function applyDocktermData(', '      async function pollDockterm('), c);
+  c.applyDocktermData(t, { tabId: 'W', epoch: 'epoch', resolvedSessionId: 'S', status, stale, claudeRunning: true });
+  return chat;
+}
+
+test('long attachment paste already received during send is acknowledged from existing rows', () => {
+  const text = '再过一下这两个文件 没问题打算定稿了\n\n[附件] /work/a.docx\n[附件] /work/b.docx';
+  const at = Date.now();
+  const chat = pendingPoll({ pending: [{ text, at, inflight: true, knownUserIds: ['old'] }],
+    messages: [{ id: 'new', role: 'user', ts: at + 500, text: '\n<pasted_content id="9bd2">\n' + text + '\n</pasted_content id="9bd2">\n' }] });
+  assert.equal(chat.pending.length, 0);
+});
+
+test('idle delay becomes unconfirmed without claiming delivery failure; busy or stale stays waiting', () => {
+  const old = () => ({ text: 'not observed', at: Date.now() - 60000 });
+  const chat = pendingPoll({ pending: [old()], messages: [] });
+  assert.equal(chat.pending[0].failed, undefined); assert.equal(chat.pending[0].unconfirmed, true);
+  for (const mode of [{ status: 'working' }, { stale: true }]) {
+    assert.equal(pendingPoll({ pending: [old()], messages: [], ...mode }).pending[0].unconfirmed, undefined);
+  }
+});
+
+test('same text in older history or with another attachment cannot acknowledge a new attempt', () => {
+  const at = Date.now(), text = 'review\n[附件] /work/a.docx';
+  const pending = [{ text, at, knownUserIds: ['known'] }];
+  const messages = [
+    { id: 'known', role: 'user', ts: at, text },
+    { id: 'older', role: 'user', ts: at - 10000, text },
+    { id: 'other', role: 'user', ts: at, text: 'review\n[附件] /work/b.docx' }
+  ];
+  assert.equal(pendingPoll({ pending, messages }).pending.length, 1);
+  // A single transcript record cannot acknowledge two identical attempts.
+  assert.equal(TaktInteractions.reconcilePending([{ text, at }, { text, at }],
+    [{ id: 'new', role: 'user', ts: at, text }]).length, 1);
+});

@@ -5751,10 +5751,11 @@
           dotMcp.className = `status-dot ${st.mcp.ok ? 'ok' : 'err'}`;
           textMcp.textContent = st.mcp.ok
             ? (failedMcpHosts.length ? `MCP ${failedMcpHosts.length} 个节点断开` : 'MCP')
-            : st.mcp.localHttpOk ? 'MCP 隧道断开' : 'MCP 服务离线';
+            : st.mcp.authFailed ? 'MCP 鉴权失败' : st.mcp.localHttpOk ? 'MCP 连接未通过' : 'MCP 服务离线';
           document.getElementById('pillMcp').title = st.mcp.ok
             ? `本机 MCP 反向隧道正常 · ${st.mcp.tools} 个工具${failedMcpHosts.length ? `\n断开：${failedMcpHosts.join(', ')}` : ''}`
-            : st.mcp.localHttpOk ? `隧道断开，正在自动重连${failedMcpHosts.length ? `\n${failedMcpHosts.join(', ')}` : ''}` : '本机 MCP 服务未运行，正在拉起';
+            : st.mcp.authFailed ? '远端 MCP 凭据与本机不匹配，请核对连接配置'
+            : st.mcp.localHttpOk ? `本机 MCP 正在运行，但远端调用检查未通过（可能为网络或鉴权问题）${failedMcpHosts.length ? `\n${failedMcpHosts.join(', ')}` : ''}` : '本机 MCP 服务未运行';
 
           const needFiles = Number(st.syncthing.needFiles || 0);
           const needBytes = Number(st.syncthing.needBytes || 0);
@@ -6473,7 +6474,7 @@
       // inline the image (clipboard lookup + resize) and throw away the Enter that follows; older messages
       // still have bare paths.
       const DT_ATTACH_LABEL = '[附件] ';
-      const DT_PENDING_IDLE_MS = 8000; // a sent message not in the transcript after Claude was idle this long is gone
+      const DT_PENDING_WAIT_MS = 30000; // a delayed transcript is not proof of a failed send
       const DT_UPLOAD_LINE_RE = /^(?:\[附件\]\s*)?((?:\/|~\/)\S*\/\.takt\/uploads\/\S+)$/;
       const dtAttachEl = document.getElementById('docktermAttachments');
       const dtAttachments = new Map(); // tabId -> [{ id, name, size, isImage, url, file, status, remotePath, error, promise }]
@@ -6980,8 +6981,9 @@
               ${files.length ? `<div class="reading__files">${files.map((a) => `<span class="reading__file"><b>${escapeHtml(dtExtLabel(a.name))}</b>${escapeHtml(a.name)}</span>`).join('')}</div>` : ''}
               ${(p.display ?? p.text) ? `<div class="reading__user-bubble">${escapeHtml(p.display ?? p.text)}</div>` : ''}
               <span class="reading__meta">${p.failed ? escapeHtml(p.failed)
-                : p.queued ? '排队中 · Claude 完成当前步骤后处理' : '发送中…'}</span>
-              ${p.failed && p.attempt ? `<button class="btn" data-recover-attempt="${p.id}">恢复文字和附件（发送前先核对终端）</button>` : ''}
+                : p.unconfirmed ? '已提交到终端，尚待会话记录确认；请先核对终端，勿重复发送'
+                : p.inflight ? '发送中…' : p.queued ? '排队中 · Claude 完成当前步骤后处理' : '已提交到终端 · 等待会话记录确认'}</span>
+              ${(p.failed || p.unconfirmed) && p.attempt ? `<button class="btn" data-recover-attempt="${p.id}">恢复文字和附件（发送前先核对终端）</button>` : ''}
             </div>
           </div>`;
         }).join('');
@@ -7255,26 +7257,15 @@
         const now = Date.now();
         if (c.status === 'working' || c.status === 'asking') c.lastBusyAt = now;
         if (c.pending.length) {
-          const newUsers = added.filter((m) => m.role === 'user');
-          const norm = (x) => String(x || '').replace(/\s+/g, ' ').trim();
-          for (const u of newUsers) {
-            const i = c.pending.findIndex((p) => norm(p.text) === norm(u.text));
-            if (i >= 0) c.pending.splice(i, 1);
-          }
-          // Claude takes queued messages as soon as it is idle: one that is still missing from the transcript
-          // after Claude has been idle for a while never arrived (or is still sitting in Claude's input box)
-          let lost = 0;
-          c.pending = c.pending.filter((p) => {
-            if (p.failed) return true; // keep failed content recoverable until explicitly dismissed
-            if (p.inflight) return true; // the node is still waiting for Claude Code to finish the paste
-            if (!c.stale && now - Math.max(p.sentAt || p.at, c.lastBusyAt || 0) > DT_PENDING_IDLE_MS) {
-              if (c.claudeRunning) lost += 1;
-              p.failed = '尚未在会话记录中确认，请核对终端后恢复草稿'; p.failedAt = now;
+          // Recheck all loaded rows: a poll may observe a message before the send request finishes.
+          // Match this attempt's content and time, never an unrelated recent user message.
+          c.pending = TaktInteractions.reconcilePending(c.pending, c.messages);
+          for (const p of c.pending) {
+            if (p.failed || p.inflight || p.unconfirmed) continue;
+            if (!c.stale && c.status === 'idle' && now - Math.max(p.sentAt || p.at, c.lastBusyAt || 0) > DT_PENDING_WAIT_MS) {
+              p.unconfirmed = true;
             }
-            return true;
-          });
-          if (lost && activeChatTab() === t) showToast(lost === 1 ? '有一条消息没有出现在对话记录里，可能还停在 Claude 的输入框（切到终端看看）'
-            : `有 ${lost} 条消息没有出现在对话记录里，可能还停在 Claude 的输入框（切到终端看看）`, 6000);
+          }
         }
         // Once Claude has written this tab's own session, later launches must resume it
         if (c.jsonlPath && c.resolvedSessionId === t.sessionId) t.resume = true;
@@ -8070,6 +8061,7 @@
             atts: atts.map((a) => ({ name: a.name, isImage: a.isImage, url: a.url })),
             queued: c.status === 'working',
             inflight: true,
+            knownUserIds: (c.messages || []).filter(m => m.role === 'user').map(m => m.id),
             at: Date.now(),
             attempt,
           });
