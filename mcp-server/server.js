@@ -2,7 +2,7 @@
 /**
  * TAKT-UI-CC — local MCP server ("mac-industrial-mcp")
  * --------------------------------------------------------------------------------------
- * Runs on YOUR machine (macOS) and is reverse-tunnelled (ssh -R) to every Linux node, so that
+ * Runs on YOUR machine (macOS, Windows 11 or Windows through WSL2) and is reverse-tunnelled (ssh -R) to every Linux node, so that
  * Claude Code running remotely can drive local applications and hardware:
  *   1. Blender            - bpy scripts, Metal GPU rendering, GUI launch
  *   2. FreeCAD            - freecadcmd parametric modeling, STEP inspection, GUI launch
@@ -21,12 +21,16 @@
 
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
 const cfg = require('../config');
+const platform = require('../lib/platform');
+const { TunnelManager } = require('../lib/ssh-tunnels');
+const windowsTools = require('./windows-tools');
 
 const MAC_WORK_DIR = cfg.DEFAULT_WORK_DIR;
 const NODES_CONFIG_PATH = cfg.NODES_FILE;
@@ -37,6 +41,9 @@ const BIND_HOST = cfg.MCP_HOST;
 const EDA_PORT = cfg.EDA_PORT;
 const SYNCTHING_URL = cfg.SYNCTHING_URL;
 const SSH_SOCKET_DIR = cfg.SSH_SOCKET_DIR;
+const windowsTunnels = new TunnelManager(PORT, EDA_PORT);
+process.on('exit', () => windowsTunnels.stopAll());
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { windowsTunnels.stopAll(); process.exit(0); });
 const MCP_TOKEN = cfg.getMcpToken();
 fs.mkdirSync(SSH_SOCKET_DIR, { recursive: true });
 
@@ -53,11 +60,20 @@ const PATHS = {
   dfuUtil: '/opt/homebrew/bin/dfu-util',
   esptoolPy: path.join(cfg.ESP_PYTHON_ENV, 'bin/esptool.py'),
   espPython: path.join(cfg.ESP_PYTHON_ENV, 'bin/python'),
+  ...(platform.isWindows ? windowsTools.paths() : {}),
 };
+const HOST_SHELL = fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash';
+const HOST_PLATFORM = process.platform === 'darwin'
+  ? 'macos'
+  : process.platform === 'linux'
+      && (Boolean(process.env.WSL_DISTRO_NAME) || os.release().toLowerCase().includes('microsoft'))
+    ? 'wsl2'
+    : process.platform;
+const WINDOWS_POWERSHELL = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 
 fs.mkdirSync(MAC_WORK_DIR, { recursive: true });
 
-let activeMcpNodeId = null;
+const mcpNodeContext = new AsyncLocalStorage();
 
 function loadConfiguredNodes() {
   try {
@@ -84,11 +100,12 @@ function loadConfiguredNodes() {
   ];
 }
 
-function getActiveNodeConfig(nodeId = activeMcpNodeId) {
+function getActiveNodeConfig(nodeId = mcpNodeContext.getStore() || null) {
   const nodes = loadConfiguredNodes();
   if (nodeId) {
     const found = nodes.find((n) => n.id === nodeId || n.sshHost === nodeId || n.localWorkAlias === nodeId);
     if (found) return found;
+    throw new Error('Unknown MCP node');
   }
   return nodes[0];
 }
@@ -100,6 +117,9 @@ function resolveWorkPath(inputPath = '') {
   if (!inputPath) return primaryLocalDir;
 
   let p = String(inputPath).trim();
+  for (const project of node.projectMappings || []) {
+    if (p === project.remotePath || p.startsWith(project.remotePath + '/')) return path.resolve(project.localPath, p.slice(project.remotePath.length).replace(/^\/+/, ''));
+  }
   let rel = null;
 
   if (p === cfg.TAKT_HOME || p.startsWith(cfg.TAKT_HOME + path.sep)) {
@@ -108,13 +128,6 @@ function resolveWorkPath(inputPath = '') {
   if (cfg.WORKSPACE_LINK_DIR && (p === cfg.WORKSPACE_LINK_DIR || p.startsWith(cfg.WORKSPACE_LINK_DIR + path.sep))) {
     const rest = p.slice(cfg.WORKSPACE_LINK_DIR.length).replace(/^\/+/, '');
     return path.resolve(cfg.TAKT_HOME, rest);
-  }
-  for (const n of loadConfiguredNodes()) {
-    const rDir = (n.remoteWorkDir || '').replace(/\/+$/, '');
-    if (rDir && rDir !== '/root/work' && (p === rDir || p.startsWith(rDir + '/'))) {
-      const rRel = p.slice(rDir.length).replace(/^\/+/, '');
-      return path.join(n.localWorkDir || primaryLocalDir, rRel);
-    }
   }
   if (p === primaryRemoteDir || p.startsWith(primaryRemoteDir + '/')) {
     rel = p.slice(primaryRemoteDir.length).replace(/^\/+/, '');
@@ -130,14 +143,6 @@ function resolveWorkPath(inputPath = '') {
 
   if (rel !== null) {
     const cand = path.join(primaryLocalDir, rel);
-    if (fs.existsSync(cand)) return cand;
-    // Also check across all other configured localWorkDirs (work, work2, work3...) if the file exists there
-    for (const n of loadConfiguredNodes()) {
-      if (n.localWorkDir) {
-        const alt = path.join(n.localWorkDir, rel);
-        if (fs.existsSync(alt)) return alt;
-      }
-    }
     return cand;
   }
 
@@ -146,9 +151,12 @@ function resolveWorkPath(inputPath = '') {
 
 function rewriteScriptPaths(code = '') {
   const node = getActiveNodeConfig();
-  const primaryLocalDir = (node && node.localWorkDir) || MAC_WORK_DIR;
+  const primaryLocalDir = ((node && node.localWorkDir) || MAC_WORK_DIR).split(path.sep).join('/');
   const primaryRemoteDir = ((node && node.remoteWorkDir) || LINUX_WORK_DIR).replace(/\/+$/, '');
   let out = String(code);
+  for (const project of [...(node.projectMappings || [])].sort((a, b) => b.remotePath.length - a.remotePath.length)) {
+    out = out.replaceAll(project.remotePath, project.localPath.split(path.sep).join('/'));
+  }
   if (primaryRemoteDir && primaryRemoteDir !== '/root/work') {
     out = out.replaceAll(primaryRemoteDir, primaryLocalDir);
   }
@@ -159,17 +167,15 @@ function rewriteScriptPaths(code = '') {
 }
 
 function runCommand(cmd, args, options = {}) {
+  const spec = platform.commandSpec(cmd, args);
   const timeoutMs = options.timeoutMs || 180000;
   const cwd = options.cwd || MAC_WORK_DIR;
   const isBgSsh = cmd === 'ssh' && Array.isArray(args) && args.includes('-Nf');
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, {
+    const child = spawn(spec.command, spec.args, {
+      windowsHide: true,
       cwd,
-      env: {
-        ...process.env,
-        PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH || ''}`,
-        ...(options.env || {}),
-      },
+      env: platform.childEnv(options.env),
       stdio: isBgSsh ? 'ignore' : ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -191,6 +197,148 @@ function runCommand(cmd, args, options = {}) {
       resolve({ exitCode: code ?? 0, stdout, stderr, timedOut });
     });
   });
+}
+
+function powerShellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function redactLocalEnvironment(value) {
+  let output = String(value ?? '');
+  const localHome = os.homedir();
+  const localDirs = new Set([
+    cfg.TAKT_HOME,
+    cfg.WORKSPACE_LINK_DIR,
+    MAC_WORK_DIR,
+    ...loadConfiguredNodes().map((node) => node.localWorkDir),
+  ].filter((item) => typeof item === 'string' && item.length > 3));
+  for (const localDir of [...localDirs].sort((a, b) => b.length - a.length)) {
+    output = output.replaceAll(localDir, '<LOCAL_WORK_DIR>');
+  }
+  if (localHome && localHome.length > 1) output = output.replaceAll(localHome, '<LOCAL_HOME>');
+  return output
+    .replace(/[a-zA-Z]:[\\/]Users[\\/][^\\/\r\n]+/g, '%USERPROFILE%')
+    .replace(/\/(?:Users|home)\/[^/\r\n]+/g, '<LOCAL_HOME>')
+    .replace(/\\\\wsl(?:\.localhost|\$)\\[^\\\r\n]+\\(?:root|home\\[^\\\r\n]+)/gi, '<WSL_HOME>');
+}
+
+async function runWindowsPowerShell(script, options = {}) {
+  if (HOST_PLATFORM !== 'wsl2') {
+    throw new Error('Windows PowerShell bridge is only available when TAKT runs under WSL2.');
+  }
+  const executable = fs.existsSync(WINDOWS_POWERSHELL) ? WINDOWS_POWERSHELL : 'powershell.exe';
+  const preamble = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding`;
+  const encoded = Buffer.from(`${preamble}\n${script}`, 'utf16le').toString('base64');
+  return runCommand(executable, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-EncodedCommand', encoded,
+  ], options);
+}
+
+async function toWindowsPath(inputPath) {
+  const result = await runCommand('wslpath', ['-w', inputPath], { timeoutMs: 5000 });
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    throw new Error(`无法将 WSL 路径转换为 Windows 路径: ${inputPath}\n${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+
+async function openHostUrl(url) {
+  if (HOST_PLATFORM === 'macos') {
+    return runCommand('open', [url], { timeoutMs: 5000 });
+  }
+  if (HOST_PLATFORM === 'wsl2') {
+    return runWindowsPowerShell(`Start-Process -FilePath ${powerShellLiteral(url)}`, { timeoutMs: 5000 });
+  }
+  return runCommand('xdg-open', [url], { timeoutMs: 5000 });
+}
+
+async function findChromiumExecutable() {
+  if (process.env.TAKT_CHROMIUM_BIN) return process.env.TAKT_CHROMIUM_BIN;
+  if (HOST_PLATFORM === 'macos') return PATHS.chromeBin;
+  if (HOST_PLATFORM !== 'wsl2') {
+    for (const candidate of ['google-chrome', 'chromium', 'chromium-browser']) {
+      const found = await runCommand('sh', ['-c', `command -v ${candidate}`], { timeoutMs: 3000 });
+      if (found.exitCode === 0 && found.stdout.trim()) return found.stdout.trim();
+    }
+    return '';
+  }
+
+  const lookup = await runWindowsPowerShell(`
+$candidates = @(
+  (Join-Path $env:ProgramFiles 'Google\\Chrome\\Application\\chrome.exe'),
+  (Join-Path ${'${env:ProgramFiles(x86)}'} 'Google\\Chrome\\Application\\chrome.exe'),
+  (Join-Path $env:LOCALAPPDATA 'Google\\Chrome\\Application\\chrome.exe'),
+  (Join-Path $env:ProgramFiles 'Microsoft\\Edge\\Application\\msedge.exe'),
+  (Join-Path ${'${env:ProgramFiles(x86)}'} 'Microsoft\\Edge\\Application\\msedge.exe')
+)
+$found = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $found) { throw 'Chrome or Edge was not found.' }
+[Console]::Out.Write($found)
+`, { timeoutMs: 8000 });
+  if (lookup.exitCode !== 0 || !lookup.stdout.trim()) return '';
+  const converted = await runCommand('wslpath', ['-u', lookup.stdout.trim()], { timeoutMs: 5000 });
+  return converted.exitCode === 0 ? converted.stdout.trim() : '';
+}
+
+async function captureWindowsScreen(outPath, args, maxDimension) {
+  const outputPath = await toWindowsPath(outPath);
+  const region = args.region ? String(args.region).split(',').map((v) => Number(v.trim())) : null;
+  if (region && (region.length !== 4 || region.some((v) => !Number.isFinite(v)))) {
+    throw new Error('region 必须是 "x,y,width,height"，且四项都必须是数字。');
+  }
+
+  const activateScript = args.activate_app
+    ? `$shell = New-Object -ComObject WScript.Shell\n[void]$shell.AppActivate(${powerShellLiteral(args.activate_app)})\nStart-Sleep -Milliseconds 500`
+    : '';
+  const regionScript = region
+    ? `$x = ${region[0]}\n$y = ${region[1]}\n$width = ${region[2]}\n$height = ${region[3]}`
+    : `$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen\n$x = $bounds.X\n$y = $bounds.Y\n$width = $bounds.Width\n$height = $bounds.Height`;
+
+  const result = await runWindowsPowerShell(`
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+${activateScript}
+${regionScript}
+if ($width -le 0 -or $height -le 0) { throw 'Capture width and height must be positive.' }
+$bitmap = [System.Drawing.Bitmap]::new($width, $height)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+try {
+  $graphics.CopyFromScreen($x, $y, 0, 0, $bitmap.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+} finally {
+  $graphics.Dispose()
+}
+$maxDimension = ${Math.max(0, Number(maxDimension) || 0)}
+if ($maxDimension -gt 0 -and [Math]::Max($bitmap.Width, $bitmap.Height) -gt $maxDimension) {
+  $scale = $maxDimension / [double][Math]::Max($bitmap.Width, $bitmap.Height)
+  $newWidth = [Math]::Max(1, [int][Math]::Round($bitmap.Width * $scale))
+  $newHeight = [Math]::Max(1, [int][Math]::Round($bitmap.Height * $scale))
+  $resized = [System.Drawing.Bitmap]::new($newWidth, $newHeight)
+  $resizeGraphics = [System.Drawing.Graphics]::FromImage($resized)
+  try {
+    $resizeGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $resizeGraphics.DrawImage($bitmap, 0, 0, $newWidth, $newHeight)
+  } finally {
+    $resizeGraphics.Dispose()
+    $bitmap.Dispose()
+  }
+  $bitmap = $resized
+}
+try {
+  $bitmap.Save(${powerShellLiteral(outputPath)}, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+  $bitmap.Dispose()
+}
+`, { timeoutMs: 20000 });
+  if (result.exitCode !== 0) {
+    throw new Error(`Windows 截屏失败: ${result.stderr || result.stdout}`);
+  }
 }
 
 // ============================================================================
@@ -369,7 +517,7 @@ const TOOLS = [
   {
     name: 'mac_browser_fetch',
     description:
-      '使用用户本机 Mac 的真实网络请求 URL 并提取文本/Markdown。可绕过远端 Linux 服务器机房 IP 访问立创商城、GitHub、国内网站时的验证码或拦截。',
+      '使用用户本机的真实网络请求 URL 并提取文本/Markdown。支持 macOS、Linux 与 WSL2，可绕过远端 Linux 服务器机房出口访问网站。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -382,7 +530,7 @@ const TOOLS = [
   {
     name: 'mac_browser_chrome_extract',
     description:
-      '使用用户本机 Mac 的 Google Chrome 浏览器渲染动态网页（支持 SPA / JavaScript 渲染页面）并提取渲染后的 DOM 文本或 HTML。',
+      '使用用户本机 Chromium 浏览器渲染动态网页并提取 DOM 文本或 HTML。macOS 使用 Chrome；WSL2 自动发现 Windows Chrome 或 Edge。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -395,7 +543,7 @@ const TOOLS = [
   },
   {
     name: 'mac_browser_open_url',
-    description: '在用户本机 Mac 的默认浏览器中打开指定 URL。',
+    description: '在用户本机默认浏览器中打开指定 URL，支持 macOS、Linux 与 Windows/WSL2。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -454,7 +602,7 @@ const TOOLS = [
   {
     name: 'usb_list_devices_and_ports',
     description:
-      '枚举本机 Mac 当前连接的所有物理 USB 设备树（system_profiler SPUSBDataType）以及所有可用串口设备（/dev/cu.* 与 /dev/tty.*，如 ESP32、CH340、CP2102、J-Link、ST-Link、WCH-Link、iPhone 等）。',
+      '枚举本机 USB 与串口设备。macOS 返回 system_profiler 与 /dev/cu.*；WSL2 同时返回 Windows PnP/COM 设备和已通过 usbipd 附加到 WSL 的 /dev/ttyUSB*、/dev/ttyACM*。',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -469,7 +617,7 @@ const TOOLS = [
       properties: {
         port: {
           type: 'string',
-          description: '串口路径，例如 /dev/cu.usbserial-5B0B0246551。',
+          description: '串口路径，例如 /dev/cu.usbserial-*、/dev/ttyUSB0、/dev/ttyACM0；WSL2 也支持 Windows COM3 形式。',
         },
         baudrate: {
           type: 'number',
@@ -531,18 +679,18 @@ const TOOLS = [
     },
   },
 
-  // --- 8. Local Mac Host Command Execution Bridge & Screen Capture ---
+  // --- 8. Local host command execution bridge & screen capture ---
   {
     name: 'mac_screen_capture',
     description:
-      '对用户本机 MacBook 桌面或指定应用窗口（如 嘉立创EDA、FreeCAD、Blender、Xcode、iOS 模拟器、Chrome）进行截屏！\n' +
+      '对用户本机桌面或指定应用进行截屏，支持 macOS 与 Windows/WSL2。\n' +
       '截图会自动保存到同步目录 work/screenshots/（远端 /root/work/screenshots/ 可直接访问），并同时将压缩后的高清图像直接作为 MCP 视觉图像块返回给 Claude 直接查看。',
     inputSchema: {
       type: 'object',
       properties: {
         activate_app: {
           type: 'string',
-          description: '可选：截屏前先激活置顶的 Mac 应用名称（例如 "FreeCAD"、"Blender"、"嘉立创EDA(专业版)"、"Google Chrome"、"Xcode"、"Simulator"）。',
+          description: '可选：截屏前先激活置顶的应用名称或窗口标题（例如 "FreeCAD"、"Blender"、"Google Chrome"）。',
         },
         region: {
           type: 'string',
@@ -554,7 +702,7 @@ const TOOLS = [
         },
         max_dimension_px: {
           type: 'number',
-          description: '返回给 AI 视觉识别的最大长边像素（默认 1600，使用 macOS sips 缩放以保证清晰且低延迟）。',
+          description: '返回给 AI 视觉识别的最大长边像素（默认 1600）。',
         },
         return_inline_image: {
           type: 'boolean',
@@ -566,13 +714,18 @@ const TOOLS = [
   {
     name: 'mac_host_exec',
     description:
-      '在用户本机 MacBook 上直接执行 Shell 命令（如调用本机编译器、自定义烧录脚本、操控本地软件、查看硬件状态等）。默认工作目录为 $TAKT_HOME/work。',
+      '在用户本机直接执行 Shell 命令（如调用本机编译器、自定义烧录脚本、操控本地软件、查看硬件状态等）。macOS 使用 zsh，Linux/WSL2 使用 bash；默认工作目录为 $TAKT_HOME/work。',
     inputSchema: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: '要在 Mac 本机执行的 zsh/bash 命令字符串。',
+          description: '要在本机执行的 zsh/bash 命令；shell=windows-powershell 时为 PowerShell 脚本。',
+        },
+        shell: {
+          type: 'string',
+          enum: ['default', 'windows-powershell'],
+          description: '执行环境。默认使用 macOS zsh 或 WSL2 bash；WSL2 可选 windows-powershell 直接操作 Windows。',
         },
         cwd: {
           type: 'string',
@@ -590,7 +743,7 @@ const TOOLS = [
   // --- 9. Work Directory Sync Status ---
   {
     name: 'work_sync_status',
-    description: '查看本机 Mac 的 work/ 同步文件夹文件列表及三维模型/硬件工程状态。',
+    description: '查看本机 work/ 同步文件夹的文件列表及三维模型/硬件工程状态。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -620,6 +773,10 @@ function stripHtmlToText(html = '') {
 // Tool Execution Implementation
 // ============================================================================
 async function executeTool(name, args = {}) {
+  if (platform.isWindows) {
+    const result = await windowsTools.execute(name, args, { runCommand, resolveWorkPath, rewriteScriptPaths, node: getActiveNodeConfig(), paths: PATHS });
+    if (result.handled) return result.output;
+  }
   switch (name) {
     case 'blender_run_python': {
       let scriptPath;
@@ -667,7 +824,7 @@ if scene.render.engine == 'CYCLES':
     scene.cycles.samples = ${samples}
     try:
         prefs = bpy.context.preferences.addons['cycles'].preferences
-        prefs.compute_device_type = 'METAL'
+        prefs.compute_device_type = '${platform.isWindows ? 'CUDA' : 'METAL'}'
         prefs.get_devices()
         for d in prefs.devices:
             d.use = True
@@ -932,7 +1089,11 @@ finally:
 
     case 'mac_browser_chrome_extract': {
       const maxChars = Number(args.max_chars || 20000);
-      const res = await runCommand(PATHS.chromeBin, [
+      const chromiumBin = await findChromiumExecutable();
+      if (!chromiumBin) {
+        throw new Error('未找到 Chromium 浏览器。请安装 Chrome/Edge，或通过 TAKT_CHROMIUM_BIN 指定可执行文件。');
+      }
+      const res = await runCommand(chromiumBin, [
         '--headless=new',
         '--disable-gpu',
         '--no-first-run',
@@ -940,23 +1101,33 @@ finally:
         '--dump-dom',
         args.url,
       ], { timeoutMs: 35000 });
+      if (res.exitCode !== 0 && !res.stdout.trim()) {
+        throw new Error(`Chromium 页面渲染失败: ${res.stderr}`);
+      }
       const content = args.raw_html ? res.stdout : stripHtmlToText(res.stdout);
       return `Chrome Rendered URL: ${args.url}\n---\n${content.slice(0, maxChars)}`;
     }
 
     case 'mac_browser_open_url': {
-      await runCommand('open', [args.url]);
-      return `已在 Mac 默认浏览器打开: ${args.url}`;
+      const result = await openHostUrl(args.url);
+      if (result.exitCode !== 0) throw new Error(`无法打开本机浏览器: ${result.stderr}`);
+      return `已在本机默认浏览器打开: ${args.url}`;
     }
 
     // --- 5. Xcode & iPhone Build / Flash / Debug ---
     case 'xcode_list_devices': {
+      if (HOST_PLATFORM !== 'macos') {
+        throw new Error('xcode_list_devices 仅支持 macOS；Windows/WSL2 无法运行 Xcode 或连接 iOS 调试服务。');
+      }
       const devCtl = await runCommand(PATHS.xcrun, ['devicectl', 'list', 'devices'], { timeoutMs: 20000 });
       const xcTrace = await runCommand(PATHS.xcrun, ['xctrace', 'list', 'devices'], { timeoutMs: 20000 });
       return `=== xcrun devicectl list devices ===\n${devCtl.stdout}\n${devCtl.stderr}\n=== xcrun xctrace list devices ===\n${xcTrace.stdout}`;
     }
 
     case 'xcode_build_and_deploy_iphone': {
+      if (HOST_PLATFORM !== 'macos') {
+        throw new Error('xcode_build_and_deploy_iphone 仅支持 macOS；请在安装了 Xcode 的 Mac 节点上执行。');
+      }
       const projPath = resolveWorkPath(args.project_or_workspace_path);
       const isWorkspace = projPath.endsWith('.xcworkspace');
       const cfg = args.configuration || 'Debug';
@@ -1019,6 +1190,25 @@ finally:
 
     // --- 6. Local USB & Serial Port Tools ---
     case 'usb_list_devices_and_ports': {
+      if (HOST_PLATFORM === 'wsl2') {
+        const serials = fs.readdirSync('/dev')
+          .filter((f) => f.startsWith('ttyUSB') || f.startsWith('ttyACM') || f.startsWith('rfcomm'))
+          .map((f) => `/dev/${f}`);
+        const linuxUsb = await runCommand('lsusb', [], { timeoutMs: 10000 });
+        const windowsUsb = await runWindowsPowerShell(`
+$serial = Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
+  Select-Object DeviceID, Name | Format-Table -AutoSize | Out-String -Width 160
+$usb = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+  Where-Object { $_.InstanceId -like 'USB*' } |
+  Select-Object Status, Class, FriendlyName | Sort-Object Class, FriendlyName -Unique |
+  Format-Table -AutoSize | Out-String -Width 160
+$nl = [Environment]::NewLine
+[Console]::Out.Write("=== Windows COM ports ===$nl$serial$nl=== Windows USB devices ===$nl$usb")
+`, { timeoutMs: 15000 });
+        return `=== WSL serial devices ===\n${serials.join('\n') || '(none; attach devices with usbipd if Linux access is required)'}\n\n`
+          + `=== WSL lsusb ===\n${linuxUsb.stdout || linuxUsb.stderr || '(lsusb unavailable)'}\n\n`
+          + `${windowsUsb.stdout || windowsUsb.stderr}`;
+      }
       const serials = fs.readdirSync('/dev')
         .filter((f) => f.startsWith('cu.') || f.startsWith('tty.usb'))
         .map((f) => `/dev/${f}`);
@@ -1031,6 +1221,30 @@ finally:
       const baud = Number(args.baudrate || 115200);
       const duration = Math.min(30, Math.max(1, Number(args.read_duration_sec || 3)));
       const sendData = args.send_data || '';
+
+      if (HOST_PLATFORM === 'wsl2' && /^COM\d+$/i.test(port)) {
+        const result = await runWindowsPowerShell(`
+$port = [System.IO.Ports.SerialPort]::new(${powerShellLiteral(port.toUpperCase())}, ${baud}, 'None', 8, 'One')
+$port.ReadTimeout = 200
+$output = [System.Text.StringBuilder]::new()
+try {
+  $port.Open()
+  if (${powerShellLiteral(sendData)}.Length -gt 0) { $port.Write(${powerShellLiteral(sendData)}) }
+  $deadline = [DateTime]::UtcNow.AddSeconds(${duration})
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $chunk = $port.ReadExisting()
+    if ($chunk) { [void]$output.Append($chunk) }
+    Start-Sleep -Milliseconds 50
+  }
+} finally {
+  if ($port.IsOpen) { $port.Close() }
+  $port.Dispose()
+}
+[Console]::Out.Write($output.ToString())
+`, { timeoutMs: (duration + 5) * 1000 });
+        if (result.exitCode !== 0) throw new Error(`Windows 串口读取失败: ${result.stderr}`);
+        return `串口 ${port} @ ${baud} baud 读取 ${duration}s:\n---\n${result.stdout}`;
+      }
 
       const pyScript = `
 import os, sys, termios, time, select
@@ -1125,14 +1339,14 @@ finally:
         const projDir = fwPath || MAC_WORK_DIR;
         const portFlag = args.port ? `-p ${args.port}` : '';
         const cmd = `source ${JSON.stringify(cfg.IDF_EXPORT_SH)} && idf.py ${portFlag} build flash`;
-        const res = await runCommand('/bin/zsh', ['-c', cmd], { cwd: projDir, timeoutMs: 300000 });
+        const res = await runCommand(HOST_SHELL, ['-c', cmd], { cwd: projDir, timeoutMs: 300000 });
         return `ESP-IDF 编译烧录结果 (exitCode=${res.exitCode}):\n${res.stdout.slice(-4000)}\n${res.stderr.slice(-2000)}`;
       }
 
       throw new Error(`未知烧录器类型: ${flasher}`);
     }
 
-    // --- 8. Local Mac Screen Capture & Host Command Bridge ---
+    // --- 8. Local Screen Capture & Host Command Bridge ---
     case 'mac_screen_capture': {
       const shotsDir = path.join(MAC_WORK_DIR, 'screenshots');
       await fsp.mkdir(shotsDir, { recursive: true });
@@ -1141,27 +1355,32 @@ finally:
       const shotNode = getActiveNodeConfig();
       const linuxSyncedPath = `${((shotNode && shotNode.remoteWorkDir) || LINUX_WORK_DIR).replace(/\/+$/, '')}/screenshots/${path.basename(fileName)}`;
 
-      if (args.activate_app) {
-        await runCommand('osascript', ['-e', `tell application "${args.activate_app}" to activate`], { timeoutMs: 5000 });
-        await new Promise((r) => setTimeout(r, 500));
-      }
-
-      const capArgs = ['-x'];
-      if (args.region) {
-        capArgs.push('-R', String(args.region));
-      }
-      capArgs.push(outPath);
-      const capRes = await runCommand('/usr/sbin/screencapture', capArgs, { timeoutMs: 15000 });
-      if (!fs.existsSync(outPath)) {
-        throw new Error(`Mac 截屏失败 (请确认终端/Node 具有 macOS 屏幕录制权限): ${capRes.stderr}`);
-      }
-
       const maxDim = Number(args.max_dimension_px || 1600);
-      if (maxDim > 0) {
-        await runCommand('/usr/bin/sips', ['-Z', String(maxDim), outPath], { timeoutMs: 10000 });
+      if (HOST_PLATFORM === 'macos') {
+        if (args.activate_app) {
+          await runCommand('osascript', ['-e', `tell application "${args.activate_app}" to activate`], { timeoutMs: 5000 });
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        const capArgs = ['-x'];
+        if (args.region) capArgs.push('-R', String(args.region));
+        capArgs.push(outPath);
+        const capRes = await runCommand('/usr/sbin/screencapture', capArgs, { timeoutMs: 15000 });
+        if (!fs.existsSync(outPath)) {
+          throw new Error(`Mac 截屏失败 (请确认终端/Node 具有 macOS 屏幕录制权限): ${capRes.stderr}`);
+        }
+        if (maxDim > 0) {
+          await runCommand('/usr/bin/sips', ['-Z', String(maxDim), outPath], { timeoutMs: 10000 });
+        }
+      } else if (HOST_PLATFORM === 'wsl2') {
+        await captureWindowsScreen(outPath, args, maxDim);
+      } else {
+        throw new Error('mac_screen_capture 当前仅支持 macOS 与 Windows/WSL2。');
+      }
+      if (!fs.existsSync(outPath)) {
+        throw new Error(`本机截屏未生成输出文件: ${outPath}`);
       }
 
-      const textSummary = `✅ Mac 截屏成功！\n- Mac 本地路径: ${outPath}\n- 远端 Linux 同步路径: ${linuxSyncedPath}`;
+      const textSummary = `✅ 本机截屏成功！\n- 同步路径: ${linuxSyncedPath}`;
       if (args.return_inline_image !== false) {
         const imgBuf = await fsp.readFile(outPath);
         return {
@@ -1178,8 +1397,16 @@ finally:
       const cwd = args.cwd ? resolveWorkPath(args.cwd) : MAC_WORK_DIR;
       const timeoutMs = Math.min(600000, Math.max(5000, Number(args.timeout_sec || 120) * 1000));
       const cmd = rewriteScriptPaths(args.command);
-      const res = await runCommand('/bin/zsh', ['-c', cmd], { cwd, timeoutMs });
-      return `Mac 本机命令执行完成 (exitCode=${res.exitCode}, cwd=${cwd}):\nSTDOUT:\n${res.stdout.slice(-6000)}\nSTDERR:\n${res.stderr.slice(-3000)}`;
+      if (args.shell === 'windows-powershell') {
+        if (HOST_PLATFORM !== 'wsl2') {
+          throw new Error('shell=windows-powershell 仅在 Windows/WSL2 客户端上可用。');
+        }
+        const windowsCwd = await toWindowsPath(cwd);
+        const res = await runWindowsPowerShell(`Set-Location -LiteralPath ${powerShellLiteral(windowsCwd)}\n${cmd}`, { timeoutMs });
+        return `Windows PowerShell 执行完成 (exitCode=${res.exitCode}):\nSTDOUT:\n${res.stdout.slice(-6000)}\nSTDERR:\n${res.stderr.slice(-3000)}`;
+      }
+      const res = await runCommand(HOST_SHELL, ['-c', cmd], { cwd, timeoutMs });
+      return `本机命令执行完成 (exitCode=${res.exitCode}):\nSTDOUT:\n${res.stdout.slice(-6000)}\nSTDERR:\n${res.stderr.slice(-3000)}`;
     }
 
     case 'work_sync_status': {
@@ -1196,7 +1423,7 @@ finally:
           mtime: st ? st.mtime.toISOString() : null,
         });
       }
-      return JSON.stringify({ mac_work_dir: dir, files: rows }, null, 2);
+      return JSON.stringify({ files: rows }, null, 2);
     }
 
     default:
@@ -1223,7 +1450,7 @@ async function handleJsonRpc(msg) {
           },
           serverInfo: {
             name: 'mac-industrial-mcp',
-            version: '2.1.0',
+            version: require('../package.json').version,
           },
         },
       };
@@ -1241,7 +1468,7 @@ async function handleJsonRpc(msg) {
       return {
         jsonrpc: '2.0',
         id,
-        result: { tools: TOOLS },
+        result: { tools: platform.isWindows ? windowsTools.describe(TOOLS) : TOOLS },
       };
     }
 
@@ -1250,9 +1477,12 @@ async function handleJsonRpc(msg) {
       const toolArgs = params?.arguments || {};
       try {
         const output = await executeTool(toolName, toolArgs);
-        const content = output && typeof output === 'object' && Array.isArray(output.__mcp_content)
+        const rawContent = output && typeof output === 'object' && Array.isArray(output.__mcp_content)
           ? output.__mcp_content
           : [{ type: 'text', text: String(output) }];
+        const content = rawContent.map((item) => item.type === 'text'
+          ? { ...item, text: redactLocalEnvironment(item.text) }
+          : item);
         return {
           jsonrpc: '2.0',
           id,
@@ -1266,7 +1496,7 @@ async function handleJsonRpc(msg) {
           jsonrpc: '2.0',
           id,
           result: {
-            content: [{ type: 'text', text: `Tool Error (${toolName}): ${err.message}` }],
+            content: [{ type: 'text', text: redactLocalEnvironment(`Tool Error (${toolName}): ${err.message}`) }],
             isError: true,
           },
         };
@@ -1533,16 +1763,13 @@ if (process.argv.includes('--stdio')) {
       let originOk = false;
       try {
         const o = new URL(req.headers.origin);
-        originOk = ['127.0.0.1', 'localhost'].includes(o.hostname);
+        originOk = ['127.0.0.1', 'localhost'].includes(o.hostname) && Number(o.port || 80) === PORT;
       } catch {}
       if (!originOk) {
         res.writeHead(403, { 'Content-Type': 'text/plain' });
         res.end('Forbidden origin');
         return;
       }
-      res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Takt-Token');
     }
 
     if (req.method === 'OPTIONS') {
@@ -1553,24 +1780,32 @@ if (process.argv.includes('--stdio')) {
 
     const urlObj = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
 
-    // Loopback / SSH reverse-tunnel requests (127.0.0.1 / localhost / ::1) are trusted.
-    // Only enforce token if TAKT_REQUIRE_MCP_TOKEN=1 is explicitly set.
+    // SSH loopback identifies the transport, not the caller. MCP and control endpoints always require authentication.
     const isMcpEndpoint = urlObj.pathname === '/mcp' || urlObj.pathname === '/messages' || urlObj.pathname === '/sse';
-    if (isMcpEndpoint && process.env.TAKT_REQUIRE_MCP_TOKEN === '1') {
+    const isProtectedControlEndpoint = urlObj.pathname === '/system-status' || urlObj.pathname === '/system-heal';
+    if (isMcpEndpoint || isProtectedControlEndpoint) {
       const auth = String(req.headers.authorization || '');
       const supplied = auth.startsWith('Bearer ') ? auth.slice(7).trim() : String(req.headers['x-takt-token'] || urlObj.searchParams.get('token') || '');
       const a = Buffer.from(supplied);
       const b = Buffer.from(MCP_TOKEN);
       if (a.length !== b.length || !require('node:crypto').timingSafeEqual(a, b)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized: missing or invalid MCP token' } }));
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized: missing or invalid MCP token' } }));
         return;
       }
     }
 
     if (urlObj.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, service: 'mac-industrial-mcp', workDir: MAC_WORK_DIR, tools: TOOLS.length }));
+      res.end(JSON.stringify({ ok: true, service: 'mac-industrial-mcp', tools: platform.isWindows ? windowsTools.describe(TOOLS).length : TOOLS.length, platform: process.platform, pid: process.pid, instance: cfg.INSTANCE_ID }));
+      return;
+    }
+
+    if (urlObj.pathname === '/shutdown' && req.method === 'POST') {
+      if (req.headers.authorization !== 'Bearer ' + MCP_TOKEN) { res.writeHead(401); res.end(); return; }
+      windowsTunnels.stopAll();
+      res.writeHead(200); res.end('{"ok":true}');
+      setTimeout(() => process.exit(0), 100);
       return;
     }
 
@@ -1584,64 +1819,6 @@ if (process.argv.includes('--stdio')) {
       await runSystemWatchdogCycle(true);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
       res.end(JSON.stringify(systemStatusState));
-      return;
-    }
-
-    if (urlObj.pathname === '/remote-desktop' && (req.method === 'POST' || req.method === 'GET')) {
-      let rawBody = '';
-      for await (const chunk of req) rawBody += chunk.toString();
-      let body = {};
-      try { body = rawBody ? JSON.parse(rawBody) : {}; } catch {}
-      const action = String(body.action || urlObj.searchParams.get('action') || 'start').trim();
-      const nodeId = String(body.nodeId || urlObj.searchParams.get('nodeId') || 'linux-work4').trim();
-      const nodes = loadConfiguredNodes();
-      const node = nodes.find((n) => n.id === nodeId || n.sshHost === nodeId)
-        || nodes.find((n) => n.id === 'linux-work4')
-        || nodes.find((n) => n.desktopWebPort)
-        || nodes[0];
-      const webPort = Number((node && node.desktopWebPort) || 16080);
-      const vncPort = Number((node && node.desktopVncPort) || 15901);
-      const webUrl = `http://127.0.0.1:${webPort}/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000`;
-      const vncUrl = `vnc://:instabox@127.0.0.1:${vncPort}`;
-
-      if (action === 'open-native-vnc') {
-        await runCommand('open', [vncUrl], { timeoutMs: 4000 });
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, nodeId: node.id, sshHost: node.sshHost, webPort, vncPort, webUrl, vncUrl }));
-        return;
-      }
-
-      const sock = nodeTunnelSock(node);
-      if (action === 'start') {
-        // Ensure local port forward for webPort is listening; if not, heal tunnel
-        const lsofCheck = await runCommand('lsof', ['-nP', `-iTCP:${webPort}`, '-sTCP:LISTEN'], { timeoutMs: 2000 });
-        if (lsofCheck.exitCode !== 0 || !lsofCheck.stdout.trim()) {
-          await healNodeTunnel(node, false);
-        }
-      }
-
-      let remoteCmd = 'printf "start\\n1440x900\\ntakt-ui\\n" | /usr/local/bin/instabox-desktop';
-      if (action === 'takeover') {
-        remoteCmd = 'printf "takeover\\n1440x900\\ntakt-ui\\n" | /usr/local/bin/instabox-desktop';
-      } else if (action === 'handback') {
-        remoteCmd = 'printf "handback\\n1440x900\\ntakt-ui\\n" | /usr/local/bin/instabox-desktop';
-      } else if (action === 'open-browser') {
-        remoteCmd = 'DISPLAY=:1 nohup /usr/local/bin/chromium https://www.google.com >/dev/null 2>&1 </dev/null & printf "status\\n1440x900\\ntakt-ui\\n" | /usr/local/bin/instabox-desktop';
-      }
-
-      const sshOut = await runCommand('ssh', ['-S', sock, '-o', 'ConnectTimeout=4', node.sshHost, remoteCmd], { timeoutMs: 6000 });
-      const controller = (sshOut.stdout || '').includes('controller human') ? 'user' : 'agent';
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({
-        ok: sshOut.exitCode === 0,
-        nodeId: node.id,
-        sshHost: node.sshHost,
-        webPort,
-        vncPort,
-        webUrl,
-        vncUrl,
-        controller,
-      }));
       return;
     }
 
@@ -1727,14 +1904,7 @@ if (process.argv.includes('--stdio')) {
           const clientId = urlObj.searchParams.get('clientId');
           const sseEntry = clientId ? sseClients.get(clientId) : null;
           const reqNodeId = urlObj.searchParams.get('node') || req.headers['x-takt-node'] || (sseEntry && sseEntry.nodeId) || null;
-          const prevNode = activeMcpNodeId;
-          activeMcpNodeId = reqNodeId;
-          let resp;
-          try {
-            resp = await handleJsonRpc(payload);
-          } finally {
-            activeMcpNodeId = prevNode;
-          }
+          const resp = await mcpNodeContext.run(reqNodeId, () => handleJsonRpc(payload));
           if (sseEntry && sseEntry.res && resp) {
             sseEntry.res.write(`event: message\ndata: ${JSON.stringify(resp)}\n\n`);
             res.writeHead(202);
@@ -1786,6 +1956,7 @@ async function ensureEasyEdaBridgeDetailed() {
   const bridgeScript = candidates.find((c) => fs.existsSync(c));
   if (bridgeScript) {
     const child = spawn(process.execPath, [bridgeScript], {
+      windowsHide: true,
       detached: true,
       stdio: 'ignore',
       env: { ...process.env },
@@ -1831,7 +2002,7 @@ const systemStatusState = {
     remoteTunnelOk: false,
     edaBridgeOk: false,
     edaClientConnected: false,
-    tools: TOOLS.length,
+    tools: platform.isWindows ? windowsTools.describe(TOOLS).length : TOOLS.length,
     pingMs: null,
   },
   diskSync: {
@@ -1865,8 +2036,15 @@ function getSyncthingApiKey() {
 }
 
 async function syncthingGet(apiKey, apiPath) {
-  const r = await runCommand('curl', ['-s', '--max-time', '1.5', '-H', `X-API-Key: ${apiKey}`, `${SYNCTHING_URL}${apiPath}`]);
-  return r.stdout;
+  try {
+    const res = await fetch(`${SYNCTHING_URL}${apiPath}`, {
+      headers: { 'X-API-Key': apiKey },
+      signal: AbortSignal.timeout(3000),
+    });
+    return res.ok ? await res.text() : '';
+  } catch {
+    return '';
+  }
 }
 
 /** Aggregates Syncthing state over every node's folder / device (local Syncthing REST API). */
@@ -1902,7 +2080,7 @@ async function checkSyncthingStatus(nodes = loadConfiguredNodes().filter((n) => 
 
     let inSyncFiles = 0, globalFiles = 0, needFiles = 0, needBytes = 0;
     let state = 'idle';
-    const folderIds = [...new Set(nodes.map((n) => n.syncthingFolderId).filter(Boolean))];
+    const folderIds = [...new Set(nodes.flatMap((n) => n.projectMappings?.length ? n.projectMappings.map(m => m.id) : [n.syncthingFolderId]).filter(Boolean))];
     for (const fid of folderIds) {
       try {
         const db = JSON.parse((await syncthingGet(apiKey, `/rest/db/status?folder=${encodeURIComponent(fid)}`)) || '{}');
@@ -1948,7 +2126,7 @@ try:
     req = urllib.request.Request(
         "http://127.0.0.1:${PORT}/mcp",
         data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + ${JSON.stringify(MCP_TOKEN)}},
         method="POST",
     )
     r = urllib.request.urlopen(req, timeout=1.5).read().decode()
@@ -1957,7 +2135,7 @@ except Exception:
     pass
 eda_ok = False
 try:
-    r2 = urllib.request.urlopen("http://127.0.0.1:${EDA_PORT}/health", timeout=1.5).read().decode()
+    r2 = urllib.request.urlopen("http://127.0.0.1:${EDA_PORT}/health", timeout=4).read().decode()
     eda_ok = '"easyeda-bridge"' in r2
 except Exception:
     pass
@@ -1969,50 +2147,35 @@ try:
 except Exception:
     pass
 
-# Claude usage estimate (cached for 60s; skips api-request-blob and reads tail 1MB max per file)
+# Claude usage estimate (rolling window over local session JSONL files)
 home = os.path.expanduser("~")
 now = time.time()
-usage_cache_file = "/tmp/takt-claude-usage-cache.json"
-usage_info = None
+creds_path = os.path.join(home, ".claude", ".credentials.json")
+settings_path = os.path.join(home, ".claude", "settings.json")
+creds_mtime = os.path.getmtime(creds_path) if os.path.exists(creds_path) else 0
+plan_name = "Claude"
+is_api_proxy = False
 try:
-    if os.path.exists(usage_cache_file) and (now - os.path.getmtime(usage_cache_file)) < 60:
-        usage_info = json.load(open(usage_cache_file, "r", encoding="utf-8"))
+    st = json.load(open(settings_path))
+    if (st.get("env") or {}).get("ANTHROPIC_BASE_URL"):
+        is_api_proxy = True
+        plan_name = "API Proxy"
 except Exception:
-    usage_info = None
+    pass
 
-if not usage_info:
-    creds_path = os.path.join(home, ".claude", ".credentials.json")
-    settings_path = os.path.join(home, ".claude", "settings.json")
-    creds_mtime = os.path.getmtime(creds_path) if os.path.exists(creds_path) else 0
-    plan_name = "Claude"
-    is_api_proxy = False
+win_5h_start = max(now - 5 * 3600, creds_mtime if not is_api_proxy else 0)
+win_7d_start = max(now - 7 * 86400, creds_mtime if not is_api_proxy else 0)
+seen_ids = set()
+turns_5h = 0; weighted_5h = 0.0; tokens_5h = 0; oldest_5h_ts = None
+turns_7d = 0; weighted_7d = 0.0; tokens_7d = 0; oldest_7d_ts = None
+
+for p in glob.glob(os.path.join(home, ".claude", "projects", "*", "*.jsonl")):
     try:
-        st = json.load(open(settings_path))
-        if (st.get("env") or {}).get("ANTHROPIC_BASE_URL"):
-            is_api_proxy = True
-            plan_name = "API Proxy"
-    except Exception:
-        pass
-
-    win_5h_start = max(now - 5 * 3600, creds_mtime if not is_api_proxy else 0)
-    win_7d_start = max(now - 7 * 86400, creds_mtime if not is_api_proxy else 0)
-    seen_ids = set()
-    turns_5h = 0; weighted_5h = 0.0; tokens_5h = 0; oldest_5h_ts = None
-    turns_7d = 0; weighted_7d = 0.0; tokens_7d = 0; oldest_7d_ts = None
-
-    for p in glob.glob(os.path.join(home, ".claude", "projects", "*", "*.jsonl")):
-        try:
-            st_f = os.stat(p)
-            if st_f.st_mtime < (now - 7 * 86400):
-                continue
-            with open(p, "rb") as fb:
-                if st_f.st_size > 1048576:
-                    fb.seek(st_f.st_size - 1048576)
-                    raw_lines = fb.read().decode("utf-8", errors="replace").splitlines()[1:]
-                else:
-                    raw_lines = fb.read().decode("utf-8", errors="replace").splitlines()
-            for l in raw_lines:
-                if "api-request-blob" in l or '"usage"' not in l or '"assistant"' not in l:
+        if os.path.getmtime(p) < (now - 7 * 86400):
+            continue
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            for l in f:
+                if '"usage"' not in l:
                     continue
                 d = json.loads(l)
                 if d.get("type") != "assistant":
@@ -2042,29 +2205,17 @@ if not usage_info:
                 if ts >= win_5h_start:
                     turns_5h += 1; weighted_5h += w; tokens_5h += raw
                     if oldest_5h_ts is None or ts < oldest_5h_ts: oldest_5h_ts = ts
-        except Exception:
-            pass
-
-    cap_5h_turns = 250.0 if is_api_proxy else 45.0
-    cap_5h_weight = 2500000.0 if is_api_proxy else 450000.0
-    cap_7d_turns = 2500.0 if is_api_proxy else 450.0
-    cap_7d_weight = 25000000.0 if is_api_proxy else 4500000.0
-    used_5h_pct = min(100, round(max(turns_5h / cap_5h_turns, weighted_5h / cap_5h_weight) * 100))
-    used_7d_pct = min(100, round(max(turns_7d / cap_7d_turns, weighted_7d / cap_7d_weight) * 100))
-    reset_5h_sec = max(0, int((oldest_5h_ts + 5 * 3600) - now)) if oldest_5h_ts else 5 * 3600
-    reset_7d_sec = max(0, int((oldest_7d_ts + 7 * 86400) - now)) if oldest_7d_ts else 7 * 86400
-
-    usage_info = {
-        "plan": plan_name, "source": "session_meter", "authStatus": "ok",
-        "remaining5hPct": max(0, 100 - used_5h_pct), "used5hPct": used_5h_pct, "reset5hSec": reset_5h_sec,
-        "turns5h": turns_5h, "tokens5h": tokens_5h,
-        "remaining7dPct": max(0, 100 - used_7d_pct), "used7dPct": used_7d_pct, "reset7dSec": reset_7d_sec,
-        "turns7d": turns_7d, "tokens7d": tokens_7d,
-    }
-    try:
-        json.dump(usage_info, open(usage_cache_file, "w", encoding="utf-8"))
     except Exception:
         pass
+
+cap_5h_turns = 250.0 if is_api_proxy else 45.0
+cap_5h_weight = 2500000.0 if is_api_proxy else 450000.0
+cap_7d_turns = 2500.0 if is_api_proxy else 450.0
+cap_7d_weight = 25000000.0 if is_api_proxy else 4500000.0
+used_5h_pct = min(100, round(max(turns_5h / cap_5h_turns, weighted_5h / cap_5h_weight) * 100))
+used_7d_pct = min(100, round(max(turns_7d / cap_7d_turns, weighted_7d / cap_7d_weight) * 100))
+reset_5h_sec = max(0, int((oldest_5h_ts + 5 * 3600) - now)) if oldest_5h_ts else 5 * 3600
+reset_7d_sec = max(0, int((oldest_7d_ts + 7 * 86400) - now)) if oldest_7d_ts else 7 * 86400
 
 ts_ok = False
 ts_ip = ""
@@ -2076,6 +2227,13 @@ try:
 except Exception:
     pass
 
+usage_info = {
+    "plan": plan_name, "source": "session_meter", "authStatus": "ok",
+    "remaining5hPct": max(0, 100 - used_5h_pct), "used5hPct": used_5h_pct, "reset5hSec": reset_5h_sec,
+    "turns5h": turns_5h, "tokens5h": tokens_5h,
+    "remaining7dPct": max(0, 100 - used_7d_pct), "used7dPct": used_7d_pct, "reset7dSec": reset_7d_sec,
+    "turns7d": turns_7d, "tokens7d": tokens_7d,
+}
 print(json.dumps({"pids": pids, "count": len(pids), "uptimeSec": max_et, "mcpOk": mcp_ok, "edaOk": eda_ok,
                   "egressIp": egress, "tailscaleOk": ts_ok, "tailscaleIp": ts_ip, "usage": usage_info}))
 `.trim();
@@ -2086,22 +2244,36 @@ function nodeTunnelSock(node) {
   return path.join(SSH_SOCKET_DIR, `takt-mcp-tunnel-${String(node.id).replace(/[^a-zA-Z0-9_-]/g, '')}.sock`);
 }
 
-async function probeNode(node, timeoutMs = 5500) {
+async function probeNode(node, timeoutMs = 15000) {
   const sock = nodeTunnelSock(node);
-  const t0 = Date.now();
-  const res = await runCommand('ssh', ['-S', sock, '-o', 'ConnectTimeout=4', node.sshHost, REMOTE_PROBE_CMD], { timeoutMs });
-  const rtt = Date.now() - t0;
+  const options = [...(platform.isWindows ? ['-o', 'BatchMode=yes', '-o', 'ClearAllForwardings=yes'] : ['-S', sock]), '-o', 'ConnectTimeout=8', node.sshHost];
+  const measureConnection = async () => {
+    const started = performance.now();
+    const result = await runCommand('ssh', [...options, 'true'], { timeoutMs });
+    return result.exitCode === 0 ? Math.round(performance.now() - started) : null;
+  };
+  const [res, pingMs] = await Promise.all([
+    runCommand('ssh', [...options, REMOTE_PROBE_CMD], { timeoutMs }),
+    measureConnection(),
+  ]);
   let data = null;
   if (res.exitCode === 0 && res.stdout) {
     try { data = JSON.parse(res.stdout.trim().split('\n').pop()); } catch {}
   }
-  return { data, pingMs: data ? Math.min(999, Math.round(rtt / 2)) : null };
+  return { data, pingMs: data ? pingMs : null };
 }
 
 const nodeHealInFlight = new Map();
 
 /** Rebuilds the dedicated MCP reverse-tunnel ControlMaster for one node. Never touches interactive terminals. */
 async function healNodeTunnel(node, refreshRemoteClaudeConfig = false) {
+  if (platform.isWindows) {
+    windowsTunnels.stop(node.id);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    windowsTunnels.ensure(node);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return;
+  }
   if (nodeHealInFlight.has(node.id)) {
     return nodeHealInFlight.get(node.id);
   }
@@ -2121,6 +2293,7 @@ async function healNodeTunnel(node, refreshRemoteClaudeConfig = false) {
 import json, os, time, urllib.request
 
 mcp_url = "http://127.0.0.1:${PORT}/mcp?node=${encodeURIComponent(node.id)}"
+mcp_token = ${JSON.stringify(MCP_TOKEN)}
 home = os.path.expanduser("~")
 claude_cfg = os.path.join(home, ".claude.json")
 try:
@@ -2135,10 +2308,10 @@ if os.path.exists("/usr/local/bin/mac-industrial-mcp-client"):
         "type": "stdio",
         "command": "/usr/local/bin/mac-industrial-mcp-client",
         "args": [],
-        "env": {"TAKT_NODE_ID": "${node.id}", "TAKT_HEALED_AT": str(int(time.time()))}
+        "env": {"TAKT_NODE_ID": "${node.id}", "TAKT_HEALED_AT": str(int(time.time())), "TAKT_MCP_TOKEN": ${JSON.stringify(MCP_TOKEN)}}
     }
 else:
-    cfg["mcpServers"]["mac-industrial"] = {"type": "http", "url": mcp_url}
+    cfg["mcpServers"]["mac-industrial"] = {"type": "http", "url": mcp_url, "headers": {"Authorization": "Bearer " + ${JSON.stringify(MCP_TOKEN)}}}
 if os.path.exists("/usr/local/bin/instabox-computer-use"):
     cfg["mcpServers"]["open-computer-use"] = {
         "type": "stdio",
@@ -2194,26 +2367,28 @@ if os.path.exists(auth_cache):
 }
 
 async function runSystemWatchdogCycle(forceHeal = false) {
-  if (watchdogRunning && !forceHeal) return;
+  if (watchdogRunning) return;
   watchdogRunning = true;
   try {
     const nodes = loadConfiguredNodes().filter((n) => n.enabled && n.sshHost);
+    if (platform.isWindows) {
+      windowsTunnels.reconcile(nodes);
+      for (const node of nodes) windowsTunnels.ensure(node);
+    }
     const [edaInfo] = await Promise.all([ensureEasyEdaBridgeDetailed(), checkSyncthingStatus(nodes)]);
 
     const nodesStatus = {};
     const probeData = {};
     await Promise.all(nodes.map(async (node) => {
-      let data = null;
-      let pingMs = null;
-      if (!forceHeal) {
-        ({ data, pingMs } = await probeNode(node));
-      }
+      let { data, pingMs } = await probeNode(node);
+      // A slow probe must be confirmed before replacing a working reverse tunnel.
+      if (!forceHeal && (!data || !data.mcpOk)) ({ data, pingMs } = await probeNode(node));
       const needHeal = forceHeal || !data || !data.mcpOk;
       const sinceHeal = Date.now() - (lastNodeHealAt.get(node.id) || 0);
       if (needHeal && (forceHeal || sinceHeal > 15000)) {
         systemStatusState.healing = true;
         lastNodeHealAt.set(node.id, Date.now());
-        await healNodeTunnel(node, forceHeal);
+        await healNodeTunnel(node);
         ({ data, pingMs } = await probeNode(node));
         systemStatusState.healCount += 1;
         systemStatusState.lastHealAt = Date.now();
@@ -2221,8 +2396,6 @@ async function runSystemWatchdogCycle(forceHeal = false) {
       probeData[node.id] = data;
       nodesStatus[node.id] = {
         id: node.id,
-        name: node.name || node.id,
-        badge: node.badge || node.id,
         sshHost: node.sshHost,
         online: Boolean(data),
         mcpOk: Boolean(data && data.mcpOk),
@@ -2240,9 +2413,10 @@ async function runSystemWatchdogCycle(forceHeal = false) {
     const onlineIds = Object.keys(nodesStatus).filter((id) => nodesStatus[id].online);
     const first = onlineIds.length ? nodesStatus[onlineIds[0]] : null;
     const firstData = first ? probeData[first.id] : null;
-    const allOnlineMcpOk = onlineIds.length > 0 && onlineIds.every((id) => nodesStatus[id].mcpOk);
+    const anyMcpOk = onlineIds.some((id) => nodesStatus[id].mcpOk);
     const anyEdaOk = onlineIds.some((id) => nodesStatus[id].edaOk);
-    const bestPing = onlineIds.length ? Math.min(...onlineIds.map((id) => nodesStatus[id].pingMs || 999)) : null;
+    const measuredTimes = onlineIds.map((id) => nodesStatus[id].pingMs).filter((ms) => Number.isFinite(ms) && ms >= 0);
+    const bestPing = measuredTimes.length ? Math.min(...measuredTimes) : null;
 
     systemStatusState.remoteCli = firstData
       ? {
@@ -2256,17 +2430,17 @@ async function runSystemWatchdogCycle(forceHeal = false) {
         }
       : { online: false, processCount: 0, uptimeSec: 0, pids: [], egressIp: '' };
     systemStatusState.mcpStatus = {
-      ok: allOnlineMcpOk,
+      ok: anyMcpOk,
       localMcpOk: true,
-      remoteTunnelOk: allOnlineMcpOk,
+      remoteTunnelOk: anyMcpOk,
       edaBridgeOk: Boolean(edaInfo.ok && anyEdaOk),
       edaClientConnected: Boolean(edaInfo.edaConnected),
-      tools: TOOLS.length,
+      tools: platform.isWindows ? windowsTools.describe(TOOLS).length : TOOLS.length,
       pingMs: bestPing,
     };
     if (firstData && firstData.usage) systemStatusState.claudeUsage = firstData.usage;
 
-    systemStatusState.ok = Boolean(onlineIds.length && allOnlineMcpOk);
+    systemStatusState.ok = Boolean(onlineIds.length && anyMcpOk);
     systemStatusState.updatedAt = Date.now();
   } catch {
     systemStatusState.healing = false;

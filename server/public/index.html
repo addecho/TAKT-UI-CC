@@ -57,7 +57,7 @@
       --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
       --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.65);
 
-      --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      --font-sans: "Segoe UI", "Microsoft YaHei UI", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
       --font-mono: "JetBrains Mono", "SF Mono", "Menlo", "Monaco", monospace;
 
       /* Font scaling: every font-size is calc(Npx * var(--fs)). Chat area multiplies by --fs-chat. */
@@ -341,6 +341,25 @@
       gap: 4px;
       flex-shrink: 0;
     }
+    .panel-left > .panel-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      height: auto;
+      padding: 8px;
+      gap: 8px 4px;
+    }
+    .project-primary-actions {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      min-width: 0;
+    }
+    .project-primary-actions .btn {
+      min-width: 0;
+      padding: 0 4px;
+      white-space: nowrap;
+    }
 
     .btn {
       display: inline-flex;
@@ -461,6 +480,14 @@
       font-size: calc(10px * var(--fs, 1));
       color: var(--text-muted);
     }
+
+    .node-pill-usage {
+      font-family: var(--font-mono);
+      font-size: calc(10px * var(--fs, 1));
+      color: var(--text-muted);
+    }
+    .node-pill-usage.is-warn { color: var(--warning); }
+    .node-pill-usage.is-crit { color: var(--danger); }
 
     .session-total {
       padding: 6px 14px 2px;
@@ -1867,6 +1894,8 @@
       flex-direction: column;
       gap: 14px;
       min-width: 0;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .reading__messages:empty { display: none; }
     .reading__messages > * { min-width: 0; }
@@ -1922,6 +1951,7 @@
       display: flex;
       justify-content: flex-end;
       margin-top: 4px;
+      position: relative;
     }
     .reading__user-bubble {
       position: relative;
@@ -1968,6 +1998,33 @@
       font-size: calc(13px * var(--fs, 1));
       line-height: 1.65;
       min-width: 0;
+      position: relative;
+    }
+    .reading__copy-message {
+      position: absolute;
+      top: -5px;
+      right: 0;
+      z-index: 2;
+      height: 21px;
+      padding: 0 7px;
+      border-radius: 5px;
+      border: 1px solid var(--border-hairline);
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      font: inherit;
+      font-size: calc(10px * var(--fs, 1));
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    .reading__user:hover > .reading__copy-message,
+    .reading__assistant:hover > .reading__copy-message,
+    .reading__copy-message:focus-visible {
+      opacity: 1;
+    }
+    .reading__copy-message:hover {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
     }
 
     /* Markdown inside assistant messages */
@@ -2161,7 +2218,7 @@
       text-decoration-color: currentColor;
     }
 
-    /* Images in the conversation — always loaded from the Mac (mirror, or a cached copy) */
+    /* Images in the conversation — always loaded from the local mirror or cache */
     .reading__images {
       display: flex;
       flex-wrap: wrap;
@@ -2258,7 +2315,7 @@
       white-space: nowrap;
     }
 
-    /* Live "working" card with the last lines of the terminal */
+    /* Execution status; raw terminal text is optional diagnostic detail. */
     .reading__live {
       padding: 10px 12px;
       border-radius: var(--radius-md);
@@ -2285,6 +2342,18 @@
       animation: docktermPulse 1.2s infinite ease-in-out;
     }
     .reading__live-head .btn { margin-left: auto; height: 21px; font-size: calc(10.5px * var(--fs, 1)); padding: 0 8px; }
+    .reading__live-details summary {
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: calc(11px * var(--fs, 1));
+      padding: 3px 0;
+    }
+    .reading__live-note {
+      margin: 4px 0 7px;
+      color: var(--text-secondary);
+      font-size: calc(11px * var(--fs, 1));
+      line-height: 1.5;
+    }
     .reading__live-tail {
       margin: 0;
       padding: 7px 9px;
@@ -2513,8 +2582,32 @@
       font-size: calc(13px * var(--fs, 1));
       line-height: 1.5;
       overflow-y: auto;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .composer__input::placeholder { color: var(--text-muted); }
+    /* Claude Code's prompt suggestion: shown as the placeholder, Tab fills it in */
+    .composer__box { position: relative; }
+    .composer__box.has-suggestion .composer__input { padding-right: 78px; }
+    .composer__box.has-suggestion .composer__input::placeholder { color: var(--text-secondary); opacity: .62; }
+    .composer__suggest {
+      position: absolute;
+      right: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 20px;
+      padding: 0 6px 0 3px;
+      border: 1px solid var(--border-hairline);
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      font-size: calc(10.5px * var(--fs, 1));
+      cursor: pointer;
+    }
+    .composer__suggest[hidden] { display: none; }
+    .composer__suggest:hover { color: var(--text-primary); border-color: var(--border-accent); }
+    .composer__suggest kbd { font-size: inherit; padding: 0 4px; border-radius: 4px; }
     .composer__foot {
       display: flex;
       align-items: center;
@@ -2809,7 +2902,7 @@
     /* Generic popover menu items reuse .tag-menu; "more" menu needs icons aligned */
     .tag-menu-item .icon { color: var(--text-muted); }
     .tag-menu-item:hover .icon { color: var(--text-primary); }
-  
+
     /* ---- Appearance settings dialog ---- */
     #settingsDialog { width: 560px; }
     #settingsDialog .dialog-box { padding: 0; gap: 0; max-height: min(82vh, 760px); }
@@ -2845,7 +2938,7 @@
 (function () {
   var KEY = 'takt_appearance';
   var DEFAULTS = { theme: 'graphite', accent: '', uiSize: 13, chatSize: 100, termSize: 13, termLH: 1.4,
-    sans: 'inter', mono: 'jetbrains', cursor: 'block', blink: true, radius: 8, width: 820, motion: false };
+    sans: 'inter', mono: /Win/.test(navigator.platform) ? 'cascadia' : 'jetbrains', cursor: 'block', blink: true, radius: 8, width: 820, motion: false };
   var THEMES = [
     { id: 'graphite', name: '石墨', bg: '#0d0d0d', side: '#141414', bar: '#ececef', dark: true },
     { id: 'midnight', name: '午夜', bg: '#0b1020', side: '#0f1528', bar: '#8ab4ff', dark: true },
@@ -3012,6 +3105,10 @@
             </button>
           </div>
         </div>
+        <div class="project-primary-actions" style="padding:0 8px 8px;flex-shrink:0;">
+          <button class="btn" id="btnProjectSync">同步本地项目</button>
+          <button class="btn" id="btnLocalTerminal" title="打开本机终端，检查 SSH、密钥和本机工具">本机终端</button>
+        </div>
         <div class="sidebar-filters" id="sidebarFilters">
           <div class="filter-row" id="nodeFilterBar" aria-label="按机器筛选"></div>
           <div class="filter-row" id="tagBar" aria-label="按标签筛选"></div>
@@ -3115,7 +3212,11 @@
                       <span id="docktermLiveText">Claude 正在执行…</span>
                       <button type="button" class="btn" id="btnLiveInterrupt">中断 (Esc)</button>
                     </div>
-                    <pre class="reading__live-tail" id="docktermLiveTail"></pre>
+                    <details class="reading__live-details" id="docktermLiveDetails">
+                      <summary>终端详情（可能包含历史文字）</summary>
+                      <p class="reading__live-note">以下为当前终端末尾片段，可能包含上一轮内容，不代表本轮回复或思考。</p>
+                      <pre class="reading__live-tail" id="docktermLiveTail"></pre>
+                    </details>
                   </div>
                   <div class="askcard" id="docktermAsk" hidden></div>
                 </div>
@@ -3134,9 +3235,11 @@
                     rows="1"
                     placeholder="给 Claude 发消息… 输入 / 查看命令，可粘贴或拖入图片、文件"
                   ></textarea>
+                  <button type="button" class="composer__suggest" id="docktermSuggestBtn" tabindex="-1" title="Claude Code 的下一步建议；点击或按 Tab 填入，不会自动发送" hidden><kbd>Tab</kbd>填入</button>
                   <div class="composer__foot">
                     <span class="composer__hints"><kbd>↵</kbd> 发送 · <kbd>⇧↵</kbd> 换行 · <kbd>/</kbd> 命令 · <kbd>↑</kbd> 上一条 · <kbd>Esc</kbd> 中断</span>
                     <div class="composer__actions">
+                      <button type="button" class="btn" id="btnDocktermPaste" title="从本机剪贴板粘贴文字或图片">粘贴</button>
                       <button type="button" class="btn" id="btnDocktermInterrupt" hidden>■ 中断</button>
                       <button type="button" class="composer__send" id="btnDocktermSend" disabled>
                         <span>发送</span>
@@ -3146,7 +3249,6 @@
                   </div>
                 </div>
                 <div class="composer__bar" id="docktermModelBar">
-                  <span class="composer__usage" id="docktermUsage" hidden></span>
                   <span class="composer__bar-note" id="docktermModelNote"></span>
                   <div class="dt-pick" id="docktermModelPick">
                     <button type="button" class="dt-pick__btn" id="docktermModelBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="模型"><span class="dt-pick__label" id="docktermModelLabel">模型</span><svg class="dt-pick__chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
@@ -3165,8 +3267,8 @@
             <img id="docktermLightboxImg" alt="" />
             <div class="dt-lightbox__bar">
               <span class="dt-lightbox__name" id="docktermLightboxName"></span>
-              <button type="button" class="btn" id="btnLightboxOpen">用 Mac 应用打开</button>
-              <button type="button" class="btn" id="btnLightboxReveal">在 Finder 中显示</button>
+              <button type="button" class="btn" id="btnLightboxOpen">用本机应用打开</button>
+              <button type="button" class="btn" id="btnLightboxReveal">在文件管理器中显示</button>
               <button type="button" class="btn" id="btnLightboxClose">关闭 (Esc)</button>
             </div>
           </div>
@@ -3206,11 +3308,8 @@
             <button class="btn btn-icon btn-ghost" id="btnToggleAllDirs" title="折叠 / 展开全部子目录">
               <svg class="icon" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
             </button>
-            <button class="btn btn-icon btn-ghost" id="btnOpenFinder" title="在 Finder 中显示">
+            <button class="btn btn-icon btn-ghost" id="btnOpenFinder" title="在文件管理器中显示">
               <svg class="icon" viewBox="0 0 24 24"><path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"/><path d="M2 13h10"/><path d="m9 16 3-3-3-3"/></svg>
-            </button>
-            <button class="btn btn-icon btn-ghost" id="btnDockRemoteDesktop" title="在预览区内嵌远程桌面">
-              <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             </button>
             <button class="btn btn-icon btn-ghost" id="btnRefreshFiles" title="刷新目录">
               <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
@@ -3221,7 +3320,7 @@
         <div class="right-split" id="rightSplit">
           <!-- Top: Collapsible & Drag-and-Drop File Tree -->
           <div class="file-browser-pane" id="fileBrowserPane">
-            <div class="section-subhead" id="toggleFileBrowserSection" aria-expanded="true" title="点击折叠 / 展开。文件可拖到其它目录移动、拖进终端插入路径；从 Finder 拖入即上传">
+            <div class="section-subhead" id="toggleFileBrowserSection" aria-expanded="true" title="点击折叠 / 展开。文件可拖到其它目录移动、拖进终端插入路径；从文件管理器拖入即上传">
               <div class="section-subhead-left">
                 <svg class="icon icon-sm chevron-icon" id="fileSectionChevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                 <span>目录</span>
@@ -3230,7 +3329,7 @@
             </div>
 
             <div class="file-path-bar" id="rootDropBar" title="把文件拖到这里可移回项目根目录">
-              <span class="file-path-text" id="currentSessionCwdLabel">/Users/will/.takt-ai/work</span>
+              <span class="file-path-text" id="currentSessionCwdLabel">本地工作区</span>
               <span class="machine-badge" id="rightNodeBadge">KR-1 · work</span>
             </div>
 
@@ -3296,6 +3395,17 @@
     </footer>
   </div>
 
+  <dialog id="projectSyncDialog" class="ag-dialog"><form class="dialog-box" id="projectSyncForm">
+    <h3>同步本地项目</h3>
+    <select id="syncProjectNode" class="dialog-input"></select>
+    <div style="display:flex;gap:8px"><input id="syncLocalPath" class="dialog-input" placeholder="本地项目完整路径" required><button type="button" class="btn" id="syncPick">选择目录</button></div>
+    <input id="syncProjectName" class="dialog-input" placeholder="服务器 work 下的项目名称（新目录）" required>
+    <p>直接同步原目录。双向同步包含修改与删除。服务器目标必须是新目录。</p>
+    <label><input type="checkbox" id="syncPauseParent" required> 暂停该节点原有的整个 work 同步，保留原配置和文件；其他目录将暂时停止同步。</label>
+    <p id="syncProjectResult" style="white-space:pre-wrap"></p>
+    <div id="syncProjectMappings" style="font-size:12px;white-space:pre-wrap"></div>
+    <div class="dialog-footer"><button type="button" class="btn" onclick="document.getElementById('projectSyncDialog').close()">关闭</button><button class="btn btn-primary" id="syncProjectSubmit">开始同步</button></div>
+  </form></dialog>
   <!-- Modal Dialog: Create Project / Subfolder / Rename Session -->
   <dialog id="newProjectDialog" class="ag-dialog" closedby="any" aria-labelledby="newProjectDialogTitle">
     <form method="dialog" class="dialog-box" id="newProjectForm">
@@ -3315,7 +3425,7 @@
     </form>
   </dialog>
 
-  <!-- Modal Dialog: Multi-Linux Node Manager (work / work2 / Syncthing / Mac MCP Bridge) -->
+  <!-- Modal Dialog: Multi-Linux Node Manager (work / work2 / Syncthing / local MCP bridge) -->
   <!-- Modal Dialog: Appearance settings (theme / accent / fonts / layout) -->
   <dialog id="settingsDialog" class="ag-dialog" closedby="any" aria-labelledby="settingsDialogTitle">
     <form method="dialog" class="dialog-box" id="settingsForm">
@@ -3377,7 +3487,7 @@
       </div>
 
       <div style="font-size:11px; color:var(--text-secondary); line-height:1.45;">
-        每台 Linux 独立绑定本地一个目录（如 <code>work</code>、<code>work2</code>），保存后自动创建本地目录、注册 Syncthing 双向同步，并建立专用逆向隧道使该机器直接调用本机 Mac 的 21 个 MCP 工具。
+        每台 Linux 独立绑定本地一个目录（如 <code>work</code>、<code>work2</code>），保存后自动创建本地目录、注册 Syncthing 双向同步，并建立专用逆向隧道使该机器请求本机的 23 个 MCP 工具。
       </div>
 
       <div class="node-manager-list scroller" id="nodeManagerList"></div>
@@ -3396,7 +3506,7 @@
             <input type="text" class="dialog-input" id="nodeInputBadge" placeholder="LX-2" maxlength="8" required />
           </div>
           <div>
-            <div style="font-size:10.5px; color:var(--text-muted); margin-bottom:3px;">Mac 本地文件夹</div>
+            <div style="font-size:10.5px; color:var(--text-muted); margin-bottom:3px;">本机文件夹</div>
             <input type="text" class="dialog-input" id="nodeInputAlias" placeholder="work2" pattern="[a-zA-Z0-9_-]+" required />
           </div>
         </div>
@@ -3415,7 +3525,7 @@
 
         <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-secondary); cursor:pointer;">
           <input type="checkbox" id="nodeInputEnabled" checked />
-          <span>启用此 Linux 节点的 SSH 扫描与 Mac MCP 逆向隧道 (:18765 / :49620)</span>
+          <span>启用此 Linux 节点的 SSH 扫描与本机 MCP 逆向隧道 (:18765 / :49620)</span>
         </label>
       </div>
 
@@ -3427,53 +3537,13 @@
   </dialog>
 
   <!-- Modal Dialog: Instabox Remote Desktop Plugin (HTML5 noVNC + Native Screen Sharing + AI/Human Control) -->
-  <dialog id="remoteDesktopDialog" class="ag-dialog" closedby="any" aria-labelledby="remoteDesktopDialogTitle" style="width: min(94vw, 1480px); max-width: 94vw;">
-    <div class="dialog-box" style="padding: 10px 12px; gap: 8px; height: min(88vh, 920px); display: flex; flex-direction: column;">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <h3 id="remoteDesktopDialogTitle" style="margin:0; font-size:13px;">
-            <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            <span>东京 AWS 远程桌面 (tokyo-claude · DISPLAY :1)</span>
-          </h3>
-          <span class="machine-badge" id="rdStatusBadge">连接中...</span>
-          <span class="machine-badge secondary" id="rdControlBadge">AI 托管模式</span>
-        </div>
-
-        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-          <button type="button" class="btn" id="btnRdToggleControl" title="在 AI 自动操作 (open-computer-use) 与人工键鼠接管之间切换">
-            <span>人工接管键鼠</span>
-          </button>
-          <button type="button" class="btn" id="btnRdLaunchBrowser" title="在远端桌面 (:1) 启动 Chromium 浏览器">
-            <span>启动 Chromium</span>
-          </button>
-          <button type="button" class="btn" id="btnRdDockRight" title="将远程桌面固定到主界面右侧预览栏，实现左侧终端 + 右侧桌面同屏">
-            <span>固定到右侧分屏</span>
-          </button>
-          <button type="button" class="btn" id="btnRdNativeVnc" title="唤起 macOS 原生「屏幕共享.app」连接 (vnc://127.0.0.1:15901)">
-            <span>Mac 原生屏幕共享</span>
-          </button>
-          <button type="button" class="btn" id="btnRdPopWindow" title="在独立浏览器窗口打开 noVNC 桌面">
-            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            <span>独立窗口</span>
-          </button>
-          <button type="button" class="btn btn-icon" id="btnRdReload" title="重连并刷新远程桌面画面">
-            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-          </button>
-          <button type="button" class="btn" id="btnRdClose">关闭</button>
-        </div>
-      </div>
-
-      <div style="flex:1; min-height:0; border:1px solid var(--border-subtle); border-radius:6px; overflow:hidden; background:#09090b; position:relative;">
-        <iframe id="rdIframe" src="about:blank" style="width:100%; height:100%; border:0; display:block;" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
-      </div>
-    </div>
-  </dialog>
 
   <div class="toast-msg" id="toastMsg"></div>
 
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <script src="/vendor/addon-web-links.js"></script>
+  <script src="/interaction-state.js"></script>
   <script>
     (() => {
       // ============================================================================
@@ -3550,12 +3620,12 @@
       let foldersData = [];
       let activeTabId = null;
       let currentFilesCwd = '/root/work';
-      let currentFilesNodeId = 'korea-claude';
+      let currentFilesNodeId = 'node-1';
       let currentFileTree = [];
       let selectedFilePath = '';
       let modalMode = 'project'; // 'project' | 'subfolder' | 'rename-session'
       let renamingSessionId = '';
-      let renamingSessionNodeId = 'korea-claude';
+      let renamingSessionNodeId = 'node-1';
       let isDraggingFile = false;
 
       // Persistent Collapsible States & Startup Non-Empty Project Filter
@@ -3589,19 +3659,19 @@
       }
 
       function getFolderKey(folder) {
-        return folder.key || `${folder.nodeId || 'korea-claude'}::${folder.path}`;
+        return folder.key || `${folder.nodeId || 'node-1'}::${folder.path}`;
       }
 
       function getNodeInfo(nodeId) {
         return (
           nodesData.find((n) => n.id === nodeId || n.sshHost === nodeId || n.localWorkAlias === nodeId) ||
           nodesData[0] || {
-            id: 'korea-claude',
-            name: '韩国首尔主节点',
-            badge: 'KR-1',
-            sshHost: 'korea-claude',
+            id: 'node-1',
+            name: 'Linux 节点 1',
+            badge: 'LX-1',
+            sshHost: '',
             remoteWorkDir: '/root/work',
-            localWorkDir: '/Users/will/.takt-ai/work',
+            localWorkDir: '',
             localWorkAlias: 'work',
             enabled: true,
           }
@@ -3623,6 +3693,38 @@
         showToast._timer = setTimeout(() => el.classList.remove('show'), ms);
       }
 
+      async function copyTextToClipboard(text) {
+        const value = String(text ?? '');
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(value);
+            return true;
+          }
+        } catch {}
+
+        // Chromium/WebView may deny the async Clipboard API even for a user click. Keep a
+        // selection-based fallback for local HTTP pages and older embedded browsers.
+        const active = document.activeElement;
+        const selection = document.getSelection();
+        const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+        const helper = document.createElement('textarea');
+        helper.value = value;
+        helper.setAttribute('readonly', '');
+        helper.setAttribute('aria-hidden', 'true');
+        helper.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0;pointer-events:none;';
+        document.body.appendChild(helper);
+        helper.select();
+        let copied = false;
+        try { copied = document.execCommand('copy'); } catch {}
+        helper.remove();
+        if (active && typeof active.focus === 'function') active.focus({ preventScroll: true });
+        if (selection && ranges.length) {
+          selection.removeAllRanges();
+          for (const range of ranges) selection.addRange(range);
+        }
+        return copied;
+      }
+
       // ============================================================================
       // 3. Native macOS AppKit SwiftTerm Bridge (`window.webkit.messageHandlers.taktNative`)
       // ============================================================================
@@ -3640,7 +3742,6 @@
 
       const newProjectDialog = document.getElementById('newProjectDialog');
       const nodeManagerDialog = document.getElementById('nodeManagerDialog');
-      const remoteDesktopDialog = document.getElementById('remoteDesktopDialog');
 
       function popoverOverStage(rect) {
         const menu = document.getElementById('tagMenu');
@@ -3709,7 +3810,6 @@
       }
       bindLightDismissDialog(newProjectDialog);
       bindLightDismissDialog(nodeManagerDialog);
-      bindLightDismissDialog(remoteDesktopDialog);
       // showModal() fires no event: watch every dialog's [open] so the native terminal always steps aside
       const dialogOpenObserver = new MutationObserver(() => syncNativeTerminalGeometry());
       document.querySelectorAll('dialog').forEach((d) => dialogOpenObserver.observe(d, { attributes: true, attributeFilter: ['open'] }));
@@ -3870,10 +3970,11 @@
           const pill = mk(
             n.id,
             n.badge || n.name || n.id,
-            `<span class="node-pill-count">${countByNode[n.id] || 0}</span>`,
+            `<span class="node-pill-count">${countByNode[n.id] || 0}</span>${dtNodeUsageHtml(n.id)}`,
             nodeServerIcon(n.online),
           );
-          pill.title = `${n.name}${n.sshHost ? ` · ${n.sshHost}:${n.remoteWorkDir}` : ' · 未绑定 SSH'}\n${n.online ? '在线' : '离线'} · 右键编辑节点`;
+          pill.title = `${n.name}${n.sshHost ? ` · ${n.sshHost}:${n.remoteWorkDir}` : ' · 未绑定 SSH'}\n${n.online ? '在线' : '离线'} · 右键编辑节点`
+          { const ut = dtNodeUsageTitle(n.id); if (ut) pill.title += `\n${ut}`; }
           pill.addEventListener('click', () => setNodeFilter(selectedNodeFilter === n.id ? 'all' : n.id));
           pill.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -3908,7 +4009,7 @@
             if (Array.isArray(data.openTabs)) {
               for (const ot of data.openTabs) {
                 if (ot.cwd) {
-                  visibleProjectKeys.add(`${ot.nodeId || 'korea-claude'}::${ot.cwd}`);
+                  visibleProjectKeys.add(`${ot.nodeId || 'node-1'}::${ot.cwd}`);
                 }
                 if (!tabs.has(ot.tabId)) {
                   openOrSwitchTerminalTab({
@@ -3916,12 +4017,13 @@
                     sessionId: ot.sessionId,
                     title: ot.title,
                     cwd: ot.cwd,
-                    nodeId: ot.nodeId || 'korea-claude',
-                    nodeBadge: ot.nodeBadge || 'KR-1',
-                    sshHost: ot.sshHost || 'korea-claude',
+                    nodeId: ot.nodeId || 'node-1',
+                    nodeBadge: ot.nodeBadge || 'LX-1',
+                    sshHost: ot.sshHost || '',
                     localWorkAlias: ot.localWorkAlias || 'work',
                     resume: true,
                     mode: ot.mode || 'claude',
+                    activate: !activeTabId,
                   });
                 }
               }
@@ -4137,6 +4239,21 @@
               await tagApi('PUT', '/api/project-tag', { projectKey: key, tagId: '' });
             }));
           }
+          const mapping = (getNodeInfo(folder.nodeId).projectMappings || []).find(m => m.remotePath === folder.path);
+          if (mapping) {
+            menu.appendChild(menuSep());
+            menu.appendChild(menuItem(`${SVG_ICONS.trash}<span>移除项目（保留文件）</span>`, async () => {
+              closeTagMenu();
+              if (!confirm(`移除「${folder.name}」并解除两端项目同步？\n本地和服务器文件都会保留，原 work 整目录同步保持暂停。`)) return;
+              try {
+                const r = await fetch('/api/project-sync', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeId: folder.nodeId, remotePath: folder.path }) });
+                const d = await r.json(); if (!d.ok) throw Error(d.error || '移除失败');
+                visibleProjectKeys.delete(key);
+                if (currentFilesCwd === folder.path || currentFilesCwd.startsWith(folder.path + '/')) await loadSessionFiles(getNodeInfo(folder.nodeId).remoteWorkDir, folder.nodeId);
+                await loadProjectTree(); showToast('项目已移除，两端文件已保留');
+              } catch (error) { showToast(error.message); }
+            }, 'danger'));
+          }
         });
       }
 
@@ -4243,7 +4360,7 @@
                 <span class="machine-badge secondary">${escapeHtml(activeNode.badge)} · 待接入 SSH</span>
               </div>
               <div style="font-size:11px; color:var(--text-secondary); line-height:1.45;">
-                本地同步目录 <code>${escapeHtml(activeNode.localWorkDir)}</code> 已就绪。点击下方按钮填入第二台 Linux 的 SSH Host 即可自动打通 Mac MCP 逆向隧道与 Syncthing。
+                本地同步目录 <code>${escapeHtml(activeNode.localWorkDir)}</code> 已就绪。点击下方按钮填入第二台 Linux 的 SSH Host 即可自动打通本机 MCP 逆向隧道与 Syncthing。
               </div>
               <button class="btn btn-primary" id="btnBannerBindSsh" style="align-self:flex-start; margin-top:2px;">配置此节点 SSH 与同步</button>
             `;
@@ -4269,8 +4386,8 @@
           const folderKey = getFolderKey(folder);
           const sessCount = (folder.sessions || []).length;
           const isCollapsed = collapsedProjects.has(folderKey);
-          const badgeText = `${folder.nodeBadge || 'KR-1'} · ${folder.localWorkAlias || 'work'}`;
-          const mappingTitle = `${folder.nodeName || folder.nodeId} (${folder.sshHost || '未配SSH'}:${folder.path} <-> Mac ${folder.localPath || folder.localWorkDir})`;
+          const badgeText = `${folder.nodeBadge || 'LX-1'} · ${folder.localWorkAlias || 'work'}`;
+          const mappingTitle = `${folder.nodeName || folder.nodeId} (${folder.sshHost || '未配SSH'}:${folder.path} <-> 本机 ${folder.localPath || folder.localWorkDir})`;
 
           const showSections = selectedNodeFilter === 'all' && nodesData.length > 1;
           if (showSections && folder.nodeId !== lastSectionNodeId) {
@@ -4389,10 +4506,11 @@
             const isListExpanded = expandedSessionLists.has(folderKey);
             const visibleSessions = isListExpanded
               ? folder.sessions
-              : folder.sessions.filter((sess, idx) => idx < SESSION_PREVIEW_LIMIT || tabs.has(sess.id) || activeTabId === sess.id);
+              : folder.sessions.filter((sess, idx) => idx < SESSION_PREVIEW_LIMIT || findSessionTab(sess.id, folder.nodeId));
             for (const sess of visibleSessions) {
-              const isOpen = tabs.has(sess.id);
-              const isCurrent = activeTabId === sess.id;
+              const sessionTab = findSessionTab(sess.id, sess.nodeId || folder.nodeId);
+              const isOpen = Boolean(sessionTab);
+              const isCurrent = sessionTab?.tabId === activeTabId;
 
               const item = document.createElement('div');
               item.className = `session-item${isCurrent ? ' active' : ''}`;
@@ -4406,7 +4524,7 @@
                 <span class="session-meta">${formatRelativeTime(sess.updatedAt)}</span>
                 <div class="session-actions">
                   <button class="session-act-btn session-rename-btn" title="重命名">${SVG_ICONS.edit}</button>
-                  <button class="session-act-btn danger session-del-btn" title="删除">${SVG_ICONS.trash}</button>
+                  <button class="session-act-btn danger session-del-btn" title="从列表隐藏（保留远端记录）">${SVG_ICONS.trash}</button>
                 </div>
               `;
 
@@ -4437,11 +4555,10 @@
 
               item.querySelector('.session-del-btn').addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (!confirm(`确定删除会话 "${sess.title}" 吗？`)) return;
-                if (tabs.has(sess.id)) {
-                  await closeTerminalTab(sess.id);
-                }
-                await fetch(`/api/sessions?id=${encodeURIComponent(sess.id)}&nodeId=${encodeURIComponent(sess.nodeId || folder.nodeId || '')}`, { method: 'DELETE' });
+                if (!confirm(`从列表隐藏会话 "${sess.title}"？远端记录和正在运行的任务会保留。`)) return;
+                const res = await fetch(`/api/sessions?id=${encodeURIComponent(sess.id)}&nodeId=${encodeURIComponent(sess.nodeId || folder.nodeId || '')}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (!res.ok || !data.ok) { showToast(data.error || '隐藏失败'); return; }
                 loadProjectTree();
               });
 
@@ -4528,7 +4645,7 @@
         });
       }
 
-      function startNewConversationInProject(projectPath = '/root/work', projectName = 'work', nodeId = 'korea-claude') {
+      function startNewConversationInProject(projectPath = '/root/work', projectName = 'work', nodeId = 'node-1') {
         const node = getNodeInfo(nodeId);
         if (!node.sshHost) {
           openNodeManagerModal(node.id);
@@ -4567,27 +4684,33 @@
       // ============================================================================
       // 7. Center Panel: Dual-Engine (Native SwiftTerm + Web xterm) Terminal Manager
       // ============================================================================
+      function findSessionTab(sessionId, nodeId) {
+        return TaktInteractions.sessionTabs(tabs, nodeId, sessionId)[0];
+      }
+
       function openOrSwitchTerminalTab({
         tabId,
         sessionId,
         title,
         cwd,
-        nodeId = 'korea-claude',
+        nodeId = 'node-1',
         nodeBadge = '',
         sshHost = '',
         localWorkAlias = '',
         resume = true,
         mode = 'claude',
+        activate = true,
       }) {
-        if (tabs.has(tabId)) {
-          activateTerminalTab(tabId);
-          return;
-        }
-
         const node = getNodeInfo(nodeId);
         const resolvedNodeId = node.id;
-        const resolvedBadge = nodeBadge || node.badge || 'KR-1';
-        const resolvedSshHost = sshHost || node.sshHost || 'korea-claude';
+        const existing = findSessionTab(sessionId || tabId, resolvedNodeId);
+        if (existing) {
+          if (activate) activateTerminalTab(existing.tabId);
+          return;
+        }
+        if (tabs.has(tabId)) tabId = generateUUID();
+        const resolvedBadge = nodeBadge || node.badge || 'LX-1';
+        const resolvedSshHost = mode === 'local' ? '' : sshHost || node.sshHost || '';
         const resolvedAlias = localWorkAlias || node.localWorkAlias || 'work';
 
         const stage = document.getElementById('terminalStage');
@@ -4603,6 +4726,7 @@
         const term = new window.Terminal({
           ...window.TaktAppearance.termOptions(),
           allowProposedApi: true,
+          screenReaderMode: true,
           scrollback: 10000,
         });
 
@@ -4617,6 +4741,26 @@
         }
 
         term.open(mountEl);
+        term.attachCustomKeyEventHandler((event) => {
+          const isTerminalCopy = event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
+            && event.key.toLowerCase() === 'c';
+          if (!isTerminalCopy) return true;
+
+          // Ctrl+Shift+C opens Chromium's element picker by default. Inside the web terminal it
+          // should behave like a desktop terminal instead: copy the current xterm selection and
+          // keep the shortcut away from both Chromium and the remote shell.
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.type === 'keydown') {
+            const selectedText = term.getSelection();
+            if (selectedText) {
+              copyTextToClipboard(selectedText).then((ok) => {
+                if (!ok) showToast('复制失败，请使用终端右键菜单复制');
+              });
+            }
+          }
+          return false;
+        });
         registerFilePathLinkProvider(term, cwd || '/root/work');
 
         const tabObj = {
@@ -4637,12 +4781,12 @@
           wsEverOpened: false,
           exited: false,
           seenImages: new Set(),
-          viewMode: savedViewModes[tabId] === 'chat' ? 'chat' : 'terminal',
+          viewMode: mode !== 'local' && savedViewModes[tabId] === 'chat' ? 'chat' : 'terminal',
           chat: null,
         };
 
         tabs.set(tabId, tabObj);
-        activateTerminalTab(tabId);
+        if (activate || !activeTabId) activateTerminalTab(tabId);
 
         if (terminalEngine === 'web' || !hasNativeHost) {
           ensureWebTerminalConnected(tabObj);
@@ -4654,6 +4798,7 @@
       }
 
       function ensureWebTerminalConnected(tabObj) {
+        if (tabObj.exited) return;
         if (tabObj.ws && (tabObj.ws.readyState === WebSocket.OPEN || tabObj.ws.readyState === WebSocket.CONNECTING)) {
           return;
         }
@@ -4662,8 +4807,8 @@
           tabId: tabObj.tabId,
           sessionId: tabObj.sessionId,
           cwd: tabObj.cwd,
-          nodeId: tabObj.nodeId || 'korea-claude',
-          sshHost: tabObj.sshHost || 'korea-claude',
+          nodeId: tabObj.nodeId || 'node-1',
+          sshHost: tabObj.sshHost || '',
           title: tabObj.title,
           resume: tabObj.resume ? '1' : '0',
           mode: tabObj.mode,
@@ -4698,6 +4843,8 @@
             if (msg.type === 'output' && typeof msg.data === 'string') {
               tabObj.term.write(msg.data);
               detectAndRenderInlineMediaFromOutput(tabObj, msg.data);
+            } else if (msg.type === 'input-error') {
+              showToast(msg.error || '窗口暂不可输入', 7000);
             } else if (msg.type === 'exit') {
               tabObj.exited = true;
               tabObj.term.write('\r\n\x1b[38;5;244m[TAKT] 会话已结束，按任意键重新连接…\x1b[0m\r\n');
@@ -4773,7 +4920,7 @@
                 tabId: t.tabId,
                 sessionId: t.sessionId,
                 cwd: t.cwd,
-                sshHost: t.sshHost || 'korea-claude',
+                sshHost: t.sshHost || '',
                 title: t.title,
                 resume: t.resume,
               });
@@ -4881,7 +5028,7 @@
           });
           btn.addEventListener('dblclick', (e) => {
             e.stopPropagation();
-            openRenameSessionModal(tabId, t.title, t.nodeId);
+            openRenameSessionModal(t.chat?.resolvedSessionId || t.sessionId, t.title, t.nodeId);
           });
           btn.querySelector('.term-tab-close').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -4894,6 +5041,7 @@
 
       // Context bar under the tabs: location + status + the actions that make sense for the view
       function claudeLaunchCommand(t, { forShell = false } = {}) {
+        if (t.mode === 'local') return navigator.userAgent.includes('Windows') ? '$PSVersionTable.PSVersion' : 'pwd';
         const sid = String(t.sessionId || '');
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sid);
         const known = t.chat && t.chat.resolvedSessionId && t.chat.jsonlPath ? t.chat.resolvedSessionId : '';
@@ -4911,7 +5059,7 @@
         if (!t) return;
         const view = t.viewMode === 'chat' ? 'chat' : 'terminal';
         const badge = document.getElementById('ctxBadge');
-        badge.textContent = t.nodeBadge || 'KR-1';
+        badge.textContent = t.nodeBadge || 'LX-1';
         badge.title = `${t.sshHost}`;
         const pathEl = document.getElementById('ctxPath');
         pathEl.textContent = t.cwd;
@@ -4931,11 +5079,13 @@
       }
 
       // ============================================================================
-      // 8. Right Panel: Collapsible & Drag-and-Drop File Tree + Previewer (Mac Local Path Priority)
+      // 8. Right panel: drag-and-drop file tree + previewer (local mirror priority)
       // ============================================================================
-      function toLocalMacPath(p, nodeId = currentFilesNodeId) {
+      function toLocalPath(p, nodeId = currentFilesNodeId) {
         const node = getNodeInfo(nodeId);
-        const localRoot = node.localWorkDir || '/Users/will/.takt-ai/work';
+        const project = (node.projectMappings || []).find(m => p === m.remotePath || String(p).startsWith(m.remotePath + '/'));
+        if (project) return project.localPath + String(p).slice(project.remotePath.length);
+        const localRoot = node.localWorkDir || '';
         const remoteRoot = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') || '/root/work';
         const clean = String(p || '').trim().replace(/\/+$/, '');
         if (!clean || clean === remoteRoot || clean === localRoot) {
@@ -4950,20 +5100,37 @@
         return clean;
       }
 
+      const filesRequests = TaktInteractions.latestRequest();
+      let filesAbort = null;
       async function loadSessionFiles(cwd = currentFilesCwd, nodeId = currentFilesNodeId, opts = {}) {
         const silent = !!(opts && opts.silent);
+        const ticket = filesRequests.next();
+        if (filesAbort) filesAbort.abort();
+        filesAbort = new AbortController();
+        const contextChanged = cwd !== currentFilesCwd || nodeId !== currentFilesNodeId;
+        if (contextChanged) {
+          currentFileTree = []; selectedFilePath = ''; filesSig = '';
+          renderFileTree();
+          if (previewAbortCtrl) previewAbortCtrl.abort();
+          document.getElementById('previewBody').innerHTML = '<div class="preview-empty">点击文件查看预览</div>';
+          document.getElementById('previewTitle').textContent = '预览';
+          document.getElementById('previewTitle').title = '';
+          document.getElementById('previewActions').innerHTML = '';
+        }
         currentFilesCwd = cwd || '/root/work';
-        currentFilesNodeId = nodeId || currentFilesNodeId || 'korea-claude';
+        currentFilesNodeId = nodeId || currentFilesNodeId || 'node-1';
         const activeNode = getNodeInfo(currentFilesNodeId);
-        document.getElementById('currentSessionCwdLabel').textContent = toLocalMacPath(currentFilesCwd, currentFilesNodeId);
+        document.getElementById('currentSessionCwdLabel').textContent = toLocalPath(currentFilesCwd, currentFilesNodeId);
         const badgeEl = document.getElementById('rightNodeBadge');
         if (badgeEl && activeNode) {
           badgeEl.textContent = `${activeNode.badge} · ${activeNode.localWorkAlias}`;
-          badgeEl.className = activeNode.id === 'korea-claude' ? 'machine-badge' : 'machine-badge secondary';
+          badgeEl.className = activeNode.id === 'node-1' ? 'machine-badge' : 'machine-badge secondary';
         }
         try {
-          const res = await fetch(`/api/files?cwd=${encodeURIComponent(currentFilesCwd)}&nodeId=${encodeURIComponent(currentFilesNodeId)}`);
+          const res = await fetch(`/api/files?cwd=${encodeURIComponent(currentFilesCwd)}&nodeId=${encodeURIComponent(currentFilesNodeId)}`, { signal: filesAbort.signal });
           const data = await res.json();
+          if (!filesRequests.current(ticket)) return;
+          if (!res.ok || !data.ok) throw new Error(data.error || '文件列表读取失败');
           if (data && data.localRoot) {
             document.getElementById('currentSessionCwdLabel').textContent = data.localRoot;
           }
@@ -4983,6 +5150,7 @@
           if (scroller && silent) scroller.scrollTop = keepTop;
           ensureFilesLive();
         } catch (err) {
+          if (err.name === 'AbortError' || !filesRequests.current(ticket)) return;
           if (!silent) console.error('Failed to load session files:', err);
         }
       }
@@ -5060,9 +5228,35 @@
         renderFileTree();
       });
 
+      async function referenceFileInActiveTab(filePath, nodeId = currentFilesNodeId) {
+        const tab = activeTabId && tabs.get(activeTabId);
+        if (!tab || tab.nodeId !== nodeId) { showToast('请切到文件所属节点的窗口'); return; }
+        try {
+          const res = await fetch('/api/file-reference', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, cwd: currentFilesCwd, nodeId }) });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || '文件尚未在远端就绪');
+          if (tabs.get(tab.tabId) !== tab || activeTabId !== tab.tabId) { showToast('窗口已切换，请在目标窗口重新引用文件'); return; }
+          sendTextToActiveTerminal(`${shellEscapePath(data.remotePath)} `);
+        } catch (err) { showToast(err.message, 8000); }
+      }
+
       function shellEscapePath(p) {
-        if (/^[a-zA-Z0-9_./-]+$/.test(p)) return p;
-        return `'${String(p).replace(/'/g, `'\\''`)}'`;
+        const tab = tabs.get(activeTabId);
+        let value = String(p);
+        if (tab?.mode === 'local' && navigator.userAgent.includes('Windows')) return "'" + value.replaceAll("'", "''") + "'";
+        for (const node of nodesData) {
+          const project = (node.projectMappings || []).find(m => { const root = m.localPath.replaceAll('\\', '/').toLowerCase(); const p = value.replaceAll('\\', '/').toLowerCase(); return p === root || p.startsWith(root + '/'); });
+          if (project) { value = project.remotePath + value.replaceAll('\\', '/').slice(project.localPath.length); break; }
+          const root = String(node.localWorkDir || '').replaceAll('\\', '/').replace(/\/+$/, '');
+          const clean = value.replaceAll('\\', '/');
+          if (root && (clean.toLowerCase() === root.toLowerCase() || clean.toLowerCase().startsWith(root.toLowerCase() + '/'))) {
+            value = (node.remoteWorkDir || '/root/work').replace(/\/+$/, '') + clean.slice(root.length);
+            break;
+          }
+        }
+        if (/^[a-zA-Z0-9_./-]+$/.test(value)) return value;
+        return "'" + value.replaceAll("'", "'\\''") + "'";
       }
 
       function renderFileTree() {
@@ -5116,8 +5310,7 @@
             // Quick button: send path into active terminal
             row.querySelector('.tree-send-btn').addEventListener('click', (e) => {
               e.stopPropagation();
-              sendTextToActiveTerminal(`${shellEscapePath(node.path)} `);
-              showToast(`已注入路径: ${node.name}`);
+              referenceFileInActiveTab(node.path, node.nodeId || currentFilesNodeId);
             });
 
             // Click row: toggle directory collapse OR preview file (with 0ms client-side filter for non-previewable / large files)
@@ -5155,7 +5348,8 @@
               syncNativeTerminalGeometry(); // Temporarily reveal HTML drop zone over native terminal
               e.dataTransfer.effectAllowed = 'copyMove';
               e.dataTransfer.setData('application/x-takt-path', node.path);
-              e.dataTransfer.setData('text/plain', shellEscapePath(node.path));
+              e.dataTransfer.setData('application/x-takt-node', node.nodeId || currentFilesNodeId);
+              e.dataTransfer.setData('text/plain', shellEscapePath(node.remotePath || node.path));
             });
 
             row.addEventListener('dragend', () => {
@@ -5201,7 +5395,7 @@
         document.getElementById('fileCountLabel').textContent = `${count} 项`;
 
         if (count === 0) {
-          container.innerHTML = '<div class="preview-empty">当前目录为空 (可从 Finder 拖拽文件至此上传)</div>';
+          container.innerHTML = '<div class="preview-empty">当前目录为空（可从文件管理器拖拽文件至此上传）</div>';
         }
       }
 
@@ -5209,6 +5403,8 @@
       async function handleDropOntoDirectory(e, targetDirPath) {
         const internalSourcePath = e.dataTransfer.getData('application/x-takt-path');
         if (internalSourcePath) {
+          const sourceNodeId = e.dataTransfer.getData('application/x-takt-node');
+          if (sourceNodeId && sourceNodeId !== currentFilesNodeId) { showToast('不能跨节点移动文件'); return; }
           if (internalSourcePath === targetDirPath) return;
           const res = await fetch('/api/files/move', {
             method: 'POST',
@@ -5232,42 +5428,37 @@
           return;
         }
 
-        // External files dropped from macOS Finder
+        // External files dropped from the host file manager
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           await uploadExternalFilesToDir(e.dataTransfer.files, targetDirPath);
         }
       }
 
       async function uploadExternalFilesToDir(fileList, targetDirPath) {
+        const cwd = currentFilesCwd, nodeId = currentFilesNodeId;
         let uploaded = 0;
         for (const file of fileList) {
-          const base64 = await new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const res = String(reader.result || '');
-              resolve(res.includes(',') ? res.split(',')[1] : '');
-            };
-            reader.onerror = () => resolve('');
-            reader.readAsDataURL(file);
-          });
-          if (!base64) continue;
-          const res = await fetch('/api/files/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              fileName: file.name,
-              targetDirPath,
-              cwd: currentFilesCwd,
-              nodeId: currentFilesNodeId,
-              contentBase64: base64,
-            }),
-          });
-          const data = await res.json();
-          if (data.ok) uploaded++;
+          if (file.size > 10 * 1024 * 1024) { showToast(`${file.name} 超过 10 MB，请作为对话附件上传`); continue; }
+          try {
+            const base64 = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+              reader.onerror = () => reject(new Error('文件读取失败'));
+              reader.readAsDataURL(file);
+            });
+            const upload = overwrite => fetch('/api/files/upload', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fileName: file.name, targetDirPath, cwd, nodeId, contentBase64: base64, overwrite }),
+            });
+            let res = await upload(false), data = await res.json();
+            if (res.status === 409 && confirm(`目标已有 ${file.name}，是否覆盖？`)) { res = await upload(true); data = await res.json(); }
+            if (!res.ok || !data.ok) { showToast(data.error || '上传失败'); continue; }
+            uploaded++;
+          } catch (err) { showToast(err.message || '上传失败'); }
         }
-        if (uploaded > 0) {
-          showToast(`已上传 ${uploaded} 个文件至 ${targetDirPath}`);
-          await loadSessionFiles(currentFilesCwd, currentFilesNodeId);
+        if (uploaded) {
+          showToast(`已写入本机 ${uploaded} 个文件；引用时会检查远端是否可读`);
+          if (cwd === currentFilesCwd && nodeId === currentFilesNodeId) await loadSessionFiles(cwd, nodeId);
         }
       }
 
@@ -5317,12 +5508,13 @@
         terminalStage.classList.remove('drag-over');
         const taktPath = e.dataTransfer.getData('application/x-takt-path');
         const plain = e.dataTransfer.getData('text/plain');
-        const pathToInject = taktPath ? shellEscapePath(taktPath) : plain;
+        if (taktPath) { referenceFileInActiveTab(taktPath, e.dataTransfer.getData('application/x-takt-node') || currentFilesNodeId); return; }
+        const pathToInject = plain;
         syncNativeTerminalGeometry();
         const chatTab = activeTabId && tabs.has(activeTabId) ? tabs.get(activeTabId) : null;
         const dropped = Array.from(e.dataTransfer.files || []);
         if (!taktPath && dropped.length && chatTab && chatTab.viewMode === 'chat') {
-          // Files from Finder -> attachments (folders are skipped)
+          // Files from the host file manager -> attachments (folders are skipped)
           const dirs = new Set();
           for (const it of Array.from(e.dataTransfer.items || [])) {
             const en = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
@@ -5403,7 +5595,7 @@
         const titleEl = document.getElementById('previewTitle');
         const actionsEl = document.getElementById('previewActions');
         const bodyEl = document.getElementById('previewBody');
-        const localDisplayPath = toLocalMacPath(filePath, nodeId);
+        const localDisplayPath = toLocalPath(filePath, nodeId);
 
         titleEl.textContent = name || (localDisplayPath ? localDisplayPath.split('/').pop() : '跳过预览');
         actionsEl.innerHTML = '';
@@ -5414,11 +5606,11 @@
             <div style="font-weight:600; color:var(--text-primary); font-size:12.5px; word-break:break-all;">${escapeHtml(name || localDisplayPath)}</div>
             <div style="font-size:11px; color:var(--text-secondary); line-height:1.5;">${escapeHtml(reason || '此文件不支持直接预览')}</div>
             <div style="font-size:10.5px; font-family:var(--font-mono); color:var(--text-muted);">
-              ${size != null ? `大小: ${formatBytes(size)} · ` : ''}Mac 本地路径: ${escapeHtml(localDisplayPath)}
+              ${size != null ? `大小: ${formatBytes(size)} · ` : ''}本机路径: ${escapeHtml(localDisplayPath)}
             </div>
             <div style="display:flex; gap:8px; margin-top:4px; flex-wrap:wrap; justify-content:center;">
-              <button class="btn" id="btnCardOpenMac">用 Mac 应用打开</button>
-              <button class="btn" id="btnCardOpenFinder">在 Finder 中定位</button>
+              <button class="btn" id="btnCardOpenMac">用本机应用打开</button>
+              <button class="btn" id="btnCardOpenFinder">在文件管理器中定位</button>
               <button class="btn btn-primary" id="btnCardInjectPath">&gt;_ 注入终端</button>
             </div>
           </div>
@@ -5439,7 +5631,7 @@
         const btnInject = document.getElementById('btnCardInjectPath');
         if (btnInject) {
           btnInject.addEventListener('click', () => {
-            sendTextToActiveTerminal(`${shellEscapePath(localDisplayPath)} `);
+            referenceFileInActiveTab(localDisplayPath);
             showToast(`已注入路径: ${name || localDisplayPath}`);
           });
         }
@@ -5540,6 +5732,7 @@
         const actionsEl = document.getElementById('previewActions');
         const bodyEl = document.getElementById('previewBody');
 
+        if (previewAbortCtrl) previewAbortCtrl.abort();
         const baseName = filePath.split('/').pop().replace(/:\d+(?::\d+)?$/, '');
         const extMatch = baseName.toLowerCase().match(/(\.[a-z0-9_-]+)$/);
         const ext = extMatch ? extMatch[1] : '';
@@ -5582,7 +5775,7 @@
             return;
           }
 
-          const localDisplayPath = data.fromRemote ? (data.remotePath || data.path || filePath) : toLocalMacPath(data.localPath || data.path || filePath, nodeId);
+          const localDisplayPath = data.fromRemote ? (data.remotePath || data.path || filePath) : toLocalPath(data.localPath || data.path || filePath, nodeId);
           titleEl.textContent = data.name || localDisplayPath;
           titleEl.title = data.fromRemote ? `${localDisplayPath}\n不在本机同步目录里 · 已从节点拷贝到本机缓存` : localDisplayPath;
 
@@ -5590,8 +5783,8 @@
           macBtn.className = 'btn';
           macBtn.style.height = '20px';
           macBtn.style.fontSize = '10.5px';
-          macBtn.title = '用 Mac 上的默认应用打开（⌥点击：在 Finder 中显示）';
-          macBtn.innerHTML = `${SVG_ICONS.externalLink}<span>Mac 打开</span>`;
+          macBtn.title = '用本机默认应用打开（Alt/⌥ 点击：在文件管理器中显示）';
+          macBtn.innerHTML = `${SVG_ICONS.externalLink}<span>本机打开</span>`;
           macBtn.addEventListener('click', (ev) => {
             openDocktermFileOnMac({ cwd, nodeId }, { path: data.fromRemote ? (data.remotePath || filePath) : (data.localPath || filePath), reveal: ev.altKey, label: data.name || baseName });
           });
@@ -5623,7 +5816,7 @@
 
           if (data.kind === 'html') {
             const sep = data.rawUrl.includes('?') ? '&' : '?';
-            bodyEl.innerHTML = `<iframe class="preview-iframe" src="${data.rawUrl}${sep}theme=dark"></iframe>`;
+            bodyEl.innerHTML = `<iframe class="preview-iframe" sandbox="allow-scripts allow-forms" src="${data.rawUrl}${sep}theme=dark"></iframe>`;
             return;
           }
 
@@ -5632,9 +5825,9 @@
           copyBtn.style.height = '20px';
           copyBtn.style.fontSize = '10.5px';
           copyBtn.innerHTML = `${SVG_ICONS.copy}<span>复制</span>`;
-          copyBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(data.content || '');
-            showToast('文件内容已复制到剪贴板');
+          copyBtn.addEventListener('click', async () => {
+            const ok = await copyTextToClipboard(data.content || '');
+            showToast(ok ? '文件内容已复制到剪贴板' : '复制失败，请选中文字后按 Ctrl+C');
           });
           actionsEl.prepend(copyBtn);
 
@@ -5711,10 +5904,11 @@
           dotMcp.className = `status-dot ${st.mcp.ok ? 'ok' : 'err'}`;
           textMcp.textContent = st.mcp.ok
             ? (failedMcpHosts.length ? `MCP ${failedMcpHosts.length} 个节点断开` : 'MCP')
-            : st.mcp.localHttpOk ? 'MCP 隧道断开' : 'MCP 服务离线';
+            : st.mcp.authFailed ? 'MCP 鉴权失败' : st.mcp.localHttpOk ? 'MCP 连接未通过' : 'MCP 服务离线';
           document.getElementById('pillMcp').title = st.mcp.ok
             ? `本机 MCP 反向隧道正常 · ${st.mcp.tools} 个工具${failedMcpHosts.length ? `\n断开：${failedMcpHosts.join(', ')}` : ''}`
-            : st.mcp.localHttpOk ? `隧道断开，正在自动重连${failedMcpHosts.length ? `\n${failedMcpHosts.join(', ')}` : ''}` : '本机 MCP 服务未运行，正在拉起';
+            : st.mcp.authFailed ? '远端 MCP 凭据与本机不匹配，请核对连接配置'
+            : st.mcp.localHttpOk ? `本机 MCP 正在运行，但远端调用检查未通过（可能为网络或鉴权问题）${failedMcpHosts.length ? `\n${failedMcpHosts.join(', ')}` : ''}` : '本机 MCP 服务未运行';
 
           const needFiles = Number(st.syncthing.needFiles || 0);
           const needBytes = Number(st.syncthing.needBytes || 0);
@@ -5762,7 +5956,7 @@
         await fetch('/api/open-system-terminal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tabId: t.tabId, cwd: t.cwd, nodeId: t.nodeId || currentFilesNodeId }),
+          body: JSON.stringify({ tabId: t.tabId, cwd: t.cwd, nodeId: t.nodeId || currentFilesNodeId, mode: t.mode }),
         });
       }
 
@@ -5782,12 +5976,8 @@
         const anchor = e.currentTarget;
         openTagMenu(anchor, (menu) => {
           menu.appendChild(menuItem(
-            `${SVG_ICONS.externalLink}<span>在 Terminal.app 中打开当前会话</span>`,
+            `${SVG_ICONS.externalLink}<span>在本机系统终端中打开当前会话</span>`,
             () => { closeTagMenu(); popCurrentSessionInSystemTerminal(); },
-          ));
-          menu.appendChild(menuItem(
-            `<svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg><span>远程桌面</span>`,
-            () => { closeTagMenu(); openRemoteDesktopModal(); },
           ));
           menu.appendChild(menuSep());
           menu.appendChild(menuItem(
@@ -5835,10 +6025,11 @@
         sendTextToActiveTerminal(`${claudeLaunchCommand(tabs.get(activeTabId), { forShell: true })}\r`);
       });
 
-      document.getElementById('btnCopyManualCmd').addEventListener('click', () => {
+      document.getElementById('btnCopyManualCmd').addEventListener('click', async () => {
         if (!activeTabId || !tabs.has(activeTabId)) return;
         const cmd = claudeLaunchCommand(tabs.get(activeTabId));
-        navigator.clipboard.writeText(cmd).then(() => showToast(`已复制：${cmd}`), () => showToast('复制失败'));
+        const ok = await copyTextToClipboard(cmd);
+        showToast(ok ? `已复制：${cmd}` : '复制失败，请选中文字后按 Ctrl+C');
       });
 
       function populateNewProjectNodeSelect(preferredNodeId) {
@@ -5869,6 +6060,34 @@
         setTimeout(() => inp.select(), 20);
       }
 
+      document.getElementById('btnProjectSync').addEventListener('click', async () => {
+        document.getElementById('syncProjectNode').innerHTML = nodesData.filter(n => n.sshHost).map(n => `<option value="${escapeHtml(n.id)}">${escapeHtml(n.name)}</option>`).join('');
+        document.getElementById('syncProjectMappings').textContent = nodesData.flatMap(n => (n.projectMappings || []).map(m => `${n.name}: ${m.localPath} ↔ ${m.remotePath}`)).join('\n');
+        document.getElementById('projectSyncDialog').showModal();
+        try {
+          const d = await (await fetch('/api/project-sync/status')).json();
+          document.getElementById('syncProjectMappings').textContent = d.projects.map(m => `${m.localPath} ↔ ${m.remotePath}\n状态：${m.error || m.state} · 待同步 ${m.needFiles ?? '--'} 个文件 · 错误 ${m.errors ?? '--'}`).join('\n\n');
+        } catch { document.getElementById('syncProjectResult').textContent = '暂时无法读取同步状态'; }
+      });
+      document.getElementById('syncPick').addEventListener('click', async () => {
+        const button = document.getElementById('syncPick'); const result = document.getElementById('syncProjectResult');
+        button.disabled = true; result.textContent = '请在 Windows 窗口选择目录…';
+        try {
+          const r = await fetch('/api/project-sync/pick', { method: 'POST' }); const d = await r.json();
+          if (!d.ok) throw Error(d.error || '目录选择失败');
+          if (d.path) { document.getElementById('syncLocalPath').value = d.path; if (!document.getElementById('syncProjectName').value) document.getElementById('syncProjectName').value = d.path.replaceAll('\\', '/').split('/').pop(); }
+          result.textContent = d.path ? '目录已选择，请确认项目名称' : '已取消选择';
+        } catch (err) { result.textContent = err.message; } finally { button.disabled = false; }
+      });
+      document.getElementById('projectSyncForm').addEventListener('submit', async e => {
+        e.preventDefault(); const button = document.getElementById('syncProjectSubmit'); const result = document.getElementById('syncProjectResult');
+        button.disabled = true; result.textContent = '正在配置并检查同步…';
+        try {
+          const r = await fetch('/api/project-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeId: document.getElementById('syncProjectNode').value, localPath: document.getElementById('syncLocalPath').value, name: document.getElementById('syncProjectName').value, acceptPause: document.getElementById('syncPauseParent').checked }) });
+          const d = await r.json(); if (!d.ok) throw Error(d.error || '配置失败');
+          result.textContent = `已配置：${d.mapping.localPath} ↔ ${d.mapping.remotePath}\n文件正在由 Syncthing 同步。`; await loadProjectTree();
+        } catch (err) { result.textContent = err.message; } finally { button.disabled = false; }
+      });
       document.getElementById('btnNewProject').addEventListener('click', () => {
         modalMode = 'project';
         const defaultNodeId = selectedNodeFilter !== 'all' ? selectedNodeFilter : currentFilesNodeId;
@@ -5912,10 +6131,8 @@
           const data = await res.json();
           newProjectDialog.close();
           if (data.ok) {
-            if (tabs.has(renamingSessionId)) {
-              tabs.get(renamingSessionId).title = name;
-              renderTabBar();
-            }
+            for (const tab of TaktInteractions.sessionTabs(tabs, renamingSessionNodeId, renamingSessionId)) tab.title = name;
+            renderTabBar();
             showToast(`会话已重命名为: ${name}`);
             await loadProjectTree();
           }
@@ -5994,7 +6211,7 @@
                 <span>${escapeHtml(n.name)}</span>
               </div>
               <div class="node-card-meta">
-                SSH: ${escapeHtml(n.sshHost || '未绑定 (仅 Mac 本地目录已就绪)')} · 本地: ~/.takt-ai/${escapeHtml(alias)} · Syncthing: ${escapeHtml(n.syncthingFolderId)}
+                SSH: ${escapeHtml(n.sshHost || '未绑定（仅本机目录已就绪）')} · 本地: ~/.takt-ai/${escapeHtml(alias)} · Syncthing: ${escapeHtml(n.syncthingFolderId)}
               </div>
             </div>
             <div style="display:flex; gap:6px; align-items:center;">
@@ -6168,199 +6385,6 @@
       });
 
       // ============================================================================
-      // 11. Instabox Remote Desktop Plugin (noVNC / Xvnc :1 / Takeover & Dock — Tokyo Node)
-      // ============================================================================
-      let rdCurrentUrl = 'http://127.0.0.1:16080/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000';
-      let rdCurrentVncUrl = 'vnc://:instabox@127.0.0.1:15901';
-      let rdControlMode = 'agent';
-
-      async function callRemoteDesktopApi(action, nodeId = 'linux-work4') {
-        try {
-          const res = await fetch('http://127.0.0.1:18765/remote-desktop', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action, nodeId }),
-          });
-          return await res.json();
-        } catch (err) {
-          try {
-            const res2 = await fetch('/api/remote-desktop', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action, nodeId }),
-            });
-            return await res2.json();
-          } catch (err2) {
-            return { ok: false, error: err2.message || err.message };
-          }
-        }
-      }
-
-      function updateRdControlBadge(mode) {
-        rdControlMode = (mode === 'human' || mode === 'user') ? 'user' : 'agent';
-        const badge = document.getElementById('rdControlBadge') || document.getElementById('rdControlModeBadge');
-        const btn = document.getElementById('btnRdToggleControl');
-        if (!badge || !btn) return;
-        if (rdControlMode === 'user') {
-          badge.textContent = '控制权: 人工接管 (User Control)';
-          badge.style.color = '#f4f4f5';
-          badge.style.background = 'rgba(255,255,255,0.08)';
-          badge.style.borderColor = 'rgba(255,255,255,0.22)';
-          btn.textContent = '交还给 Agent (Handback)';
-        } else {
-          badge.textContent = '控制权: Agent (Claude)';
-          badge.style.color = '#a1a1aa';
-          badge.style.background = 'rgba(255,255,255,0.04)';
-          badge.style.borderColor = 'rgba(255,255,255,0.12)';
-          btn.textContent = '接管鼠标键盘 (Takeover)';
-        }
-      }
-
-      async function ensureInstaboxDesktopReady() {
-        const statusBadge = document.getElementById('rdStatusBadge');
-        if (statusBadge) statusBadge.textContent = '连接 SSH 隧道中...';
-        const data = await callRemoteDesktopApi('start', 'linux-work4');
-        if (data && data.ok) {
-          if (data.webUrl || data.url) rdCurrentUrl = data.webUrl || data.url;
-          if (data.vncUrl) rdCurrentVncUrl = data.vncUrl;
-          updateRdControlBadge(data.controller || data.controlMode || 'agent');
-          if (statusBadge) {
-            statusBadge.textContent = `ONLINE · ${data.sshHost || 'tokyo-claude'} (127.0.0.1:${data.webPort || 16080})`;
-            statusBadge.style.color = '#f4f4f5';
-          }
-          return true;
-        } else {
-          if (statusBadge) {
-            statusBadge.textContent = '连接异常 (尝试直连 16080)';
-            statusBadge.style.color = '#a1a1aa';
-          }
-          return false;
-        }
-      }
-
-      async function openRemoteDesktopModal() {
-        remoteDesktopDialog.showModal();
-        syncNativeTerminalGeometry();
-        await ensureInstaboxDesktopReady();
-        const iframe = document.getElementById('rdIframe') || document.getElementById('remoteDesktopIframe');
-        if (iframe && (!iframe.src || iframe.src === 'about:blank' || iframe.src.endsWith('about:blank') || iframe.src.includes(':18765/novnc/'))) {
-          iframe.src = rdCurrentUrl;
-        }
-      }
-
-      async function dockRemoteDesktopToPreview() {
-        if (remoteDesktopDialog.open) {
-          remoteDesktopDialog.close();
-        }
-        syncNativeTerminalGeometry();
-        if (panelRight.classList.contains('collapsed')) {
-          panelRight.classList.remove('collapsed');
-          resizerRight.classList.remove('hidden');
-        }
-        if (previewPane && previewPane.classList.contains('collapsed')) {
-          previewPane.classList.remove('collapsed');
-        }
-        syncNativeTerminalGeometry();
-        showToast('正在将东京节点远程桌面嵌入右侧预览栏...');
-        await ensureInstaboxDesktopReady();
-        document.getElementById('previewTitle').textContent = '远程桌面 (VNC :1)';
-        const body = document.getElementById('previewBody');
-        body.innerHTML = `
-          <div style="position:absolute; inset:0; display:flex; flex-direction:column; width:100%; height:100%; background:#050608;">
-            <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:#0d1017; border-bottom:1px solid var(--border); gap:6px; flex-wrap:wrap;">
-              <div style="display:flex; align-items:center; gap:6px;">
-                <button class="btn" id="btnDockRdTakeover" style="height:22px; font-size:11px; padding:0 8px;">${rdControlMode === 'user' ? '交还 Agent' : '接管鼠键'}</button>
-                <button class="btn" id="btnDockRdBrowser" style="height:22px; font-size:11px; padding:0 8px;">启动 Chrome</button>
-              </div>
-              <div style="display:flex; align-items:center; gap:6px;">
-                <button class="btn" id="btnDockRdFullscreen" style="height:22px; font-size:11px; padding:0 8px;">弹窗全屏</button>
-                <button class="btn" id="btnDockRdNativeVnc" style="height:22px; font-size:11px; padding:0 8px;">macOS 屏幕共享</button>
-              </div>
-            </div>
-            <iframe src="${rdCurrentUrl}" style="flex:1; width:100%; height:100%; border:none; background:#050608;" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
-          </div>
-        `;
-        const btnTakeover = document.getElementById('btnDockRdTakeover');
-        if (btnTakeover) {
-          btnTakeover.addEventListener('click', async () => {
-            const nextAction = rdControlMode === 'user' ? 'handback' : 'takeover';
-            const res = await callRemoteDesktopApi(nextAction, 'linux-work4');
-            if (res && res.ok) {
-              updateRdControlBadge(res.controller || res.controlMode);
-              btnTakeover.textContent = rdControlMode === 'user' ? '交还 Agent' : '接管鼠键';
-              showToast(rdControlMode === 'user' ? '已切换为人工接管模式' : '已将桌面控制权交还给 Claude Agent');
-            }
-          });
-        }
-        const btnBrowser = document.getElementById('btnDockRdBrowser');
-        if (btnBrowser) {
-          btnBrowser.addEventListener('click', async () => {
-            await callRemoteDesktopApi('open-browser', 'linux-work4');
-            showToast('已在东京远程桌面启动 Chrome 浏览器');
-          });
-        }
-        const btnFs = document.getElementById('btnDockRdFullscreen');
-        if (btnFs) {
-          btnFs.addEventListener('click', () => openRemoteDesktopModal());
-        }
-        const btnVnc = document.getElementById('btnDockRdNativeVnc');
-        if (btnVnc) {
-          btnVnc.addEventListener('click', async () => {
-            await callRemoteDesktopApi('open-native-vnc', 'linux-work4');
-            showToast(`已唤起 macOS 原生屏幕共享 (${rdCurrentVncUrl})`);
-          });
-        }
-      }
-
-      document.getElementById('btnDockRemoteDesktop').addEventListener('click', () => {
-        dockRemoteDesktopToPreview();
-      });
-
-      document.getElementById('btnRdToggleControl').addEventListener('click', async () => {
-        const nextAction = rdControlMode === 'user' ? 'handback' : 'takeover';
-        const res = await callRemoteDesktopApi(nextAction, 'linux-work4');
-        if (res && res.ok) {
-          updateRdControlBadge(res.controller || res.controlMode);
-          showToast(rdControlMode === 'user'
-            ? '已切换为【人工接管】模式：您可直接在桌面中登录账号或完成验证码'
-            : '已切换为【Agent 控制】模式：Claude 可继续自动化操作');
-        }
-      });
-
-      document.getElementById('btnRdLaunchBrowser').addEventListener('click', async () => {
-        const res = await callRemoteDesktopApi('open-browser', 'linux-work4');
-        if (res && res.ok) {
-          showToast('已在东京桌面 (:1) 启动 Chrome 浏览器');
-        }
-      });
-
-      document.getElementById('btnRdDockRight').addEventListener('click', () => {
-        dockRemoteDesktopToPreview();
-      });
-
-      document.getElementById('btnRdNativeVnc').addEventListener('click', async () => {
-        await callRemoteDesktopApi('open-native-vnc', 'linux-work4');
-        showToast(`已唤起 macOS 原生屏幕共享 (${rdCurrentVncUrl})`);
-      });
-
-      document.getElementById('btnRdPopWindow').addEventListener('click', () => {
-        window.open(rdCurrentUrl, '_blank', 'noopener,noreferrer');
-      });
-
-      document.getElementById('btnRdReload').addEventListener('click', async () => {
-        await ensureInstaboxDesktopReady();
-        const iframe = document.getElementById('rdIframe') || document.getElementById('remoteDesktopIframe');
-        if (iframe) {
-          iframe.src = `${rdCurrentUrl}&_t=${Date.now()}`;
-        }
-        showToast('已重连 Instabox 远程桌面隧道');
-      });
-
-      document.getElementById('btnRdClose').addEventListener('click', () => {
-        remoteDesktopDialog.close();
-      });
-
-      // ============================================================================
       // 12. DockTerm — conversation view of the Claude session in the active tab
       //
       //  * /api/chat-view returns deltas (epoch + ver); each tab keeps its own message
@@ -6398,6 +6422,7 @@
       const dtLiveEl = document.getElementById('docktermLive');
       const dtLiveText = document.getElementById('docktermLiveText');
       const dtLiveTail = document.getElementById('docktermLiveTail');
+      const dtLiveDetails = document.getElementById('docktermLiveDetails');
       const dtAskEl = document.getElementById('docktermAsk');
       const dtJumpBtn = document.getElementById('docktermJumpBtn');
       const dtOlderBtn = document.getElementById('docktermOlderBtn');
@@ -6405,6 +6430,9 @@
       const dtInput = document.getElementById('docktermComposerInput');
       const dtSlashMenu = document.getElementById('docktermSlashMenu');
       const dtSendBtn = document.getElementById('btnDocktermSend');
+      const dtPasteBtn = document.getElementById('btnDocktermPaste');
+      const dtComposerBox = document.getElementById('docktermComposerBox');
+      const dtSuggestBtn = document.getElementById('docktermSuggestBtn');
       const dtInterruptBtn = document.getElementById('btnDocktermInterrupt');
       const dtStartBtn = document.getElementById('btnDocktermStartClaude');
       const dtStartBtnLabel = document.getElementById('btnDocktermStartClaudeLabel');
@@ -6435,7 +6463,7 @@
       // inline the image (clipboard lookup + resize) and throw away the Enter that follows; older messages
       // still have bare paths.
       const DT_ATTACH_LABEL = '[附件] ';
-      const DT_PENDING_IDLE_MS = 8000; // a sent message not in the transcript after Claude was idle this long is gone
+      const DT_PENDING_WAIT_MS = 30000; // a delayed transcript is not proof of a failed send
       const DT_UPLOAD_LINE_RE = /^(?:\[附件\]\s*)?((?:\/|~\/)\S*\/\.takt\/uploads\/\S+)$/;
       const dtAttachEl = document.getElementById('docktermAttachments');
       const dtAttachments = new Map(); // tabId -> [{ id, name, size, isImage, url, file, status, remotePath, error, promise }]
@@ -6509,7 +6537,7 @@
         return `${docktermMoveKeys(i - (ask.cursorRow || 0))}${clean}\r`;
       }
 
-      async function sendDocktermRawInput(tabObj, rawText, submitEnter = false) {
+      async function sendDocktermRawInput(tabObj, rawText, submitEnter = false, intent = 'chat') {
         if (!tabObj) return;
         const text = String(rawText || '');
         // Long or multi-line text goes in as one bracketed paste; Enter follows once Claude Code
@@ -6527,7 +6555,7 @@
         }
         // An ended local pty (ssh dropped) would swallow the input: go through tmux on the node instead.
         // A submitted paste always goes through the node, which holds Enter back until Claude Code is done pasting.
-        if (!(usePaste && submitEnter) && tabObj.ws && tabObj.ws.readyState === WebSocket.OPEN && !tabObj.exited) {
+        if (tabObj.viewMode !== 'chat' && !(usePaste && submitEnter) && tabObj.ws && tabObj.ws.readyState === WebSocket.OPEN && !tabObj.exited) {
           if (payload) tabObj.ws.send(JSON.stringify({ type: 'input', data: payload }));
           if (submitEnter) {
             setTimeout(() => {
@@ -6540,11 +6568,15 @@
           const res = await fetch('/api/chat-input', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tabId: tabObj.tabId, nodeId: tabObj.nodeId, sshHost: tabObj.sshHost, text: payload, submitEnter, enterDelayMs }),
+            body: JSON.stringify({ tabId: tabObj.tabId, nodeId: tabObj.nodeId, sshHost: tabObj.sshHost,
+              cwd: tabObj.cwd, expectedSessionId: tabObj.chat?.resolvedSessionId || '',
+              expectedBinding: tabObj.chat?.bindingToken || '', intent, text: payload, submitEnter, enterDelayMs }),
           });
-          return await res.json();
+          const result = await res.json();
+          if (!result.ok) showToast(result.error || '发送失败', 7000);
+          return result;
         } catch {
-          return { ok: false };
+          return { ok: false, delivered: null, error: '发送状态未知，请先查看终端，避免重复提交' };
         }
       }
 
@@ -6562,8 +6594,8 @@
       const MD_TABLE_SEP_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 
       // ---------------------------------------------------------------- files & images in messages
-      // Paths in the conversation become links: click previews on the right (from the Mac's disk),
-      // ⌘-click opens with the Mac app, ⌥-click reveals in Finder. Images also get thumbnails.
+      // Paths in the conversation become links: click previews on the right (from the local mirror/cache),
+      // Ctrl/⌘-click opens with a host app; Alt/⌥-click reveals in the host file manager.
       const DT_FILE_EXTS = 'py|js|mjs|cjs|ts|tsx|jsx|md|markdown|json|jsonl|ya?ml|toml|sh|bash|zsh|html?|css|scss|less|swift|rs|go|c|cc|cpp|h|hpp|m|mm|java|kt|rb|php|lua|vue|svelte|txt|log|ini|cfg|conf|env|sql|lock|xml|csv|ipynb|png|jpe?g|gif|webp|svg|bmp|ico|pdf|glb|gltf|stl|obj|fbx|3mf|ply|usdz|step|stp|iges|igs|fcstd|blend|dxf|dwg|epro2?|kicad_pcb|kicad_sch|kicad_pro|bin|hex|elf|uf2|docx?|xlsx?|pptx?|key|pages|numbers|mp4|mov|webm|mp3|wav|m4a|zip|tgz|gz';
       const DT_SEG = '[\\w.@+\\-\\u4e00-\\u9fa5]';
       const DT_LINE_SUFFIX = '(?::\\d+(?::\\d+)?)?';
@@ -6583,7 +6615,7 @@
       function dtFileLinkHtml(rawPath, labelHtml) {
         const clean = dtStripLine(rawPath);
         if (mdImageSink && DT_IMAGE_EXT_RE.test(clean)) mdImageSink.push(clean);
-        return `<a href="#" class="md-file-link" data-file-path="${escapeHtml(rawPath)}" title="${escapeHtml(clean)}\n点击预览 · ⌘点击用 Mac 应用打开 · ⌥点击在 Finder 中显示">${labelHtml}</a>`;
+        return `<a href="#" class="md-file-link" data-file-path="${escapeHtml(rawPath)}" title="${escapeHtml(clean)}\n点击预览 · Ctrl/⌘ 点击用本机应用打开 · Alt/⌥ 点击在文件管理器中显示">${labelHtml}</a>`;
       }
       function dtThumbHtml({ path: p, ref, name }) {
         const attr = p ? `data-thumb-path="${escapeHtml(p)}"` : `data-thumb-ref="${escapeHtml(ref)}"`;
@@ -6822,6 +6854,7 @@
         el.dataset.seq = String(m.seq);
         if (m.role === 'user') {
           el.className = 'reading__user';
+          el._taktCopyText = m.text || '';
           const split = dtSplitAttachmentLines(m.text || '');
           const text = split.text;
           const long = text.length > 1400 || text.split('\n').length > 18;
@@ -6832,18 +6865,19 @@
           const upFiles = split.files.filter((p) => !DT_IMAGE_EXT_RE.test(p));
           const uploads = (upImgs.length ? `<div class="reading__images">${upImgs.map((p) => dtThumbHtml({ path: p, name: dtUploadDisplayName(p) })).join('')}</div>` : '')
             + (upFiles.length ? `<div class="reading__files">${upFiles.map((p) => `<a href="#" class="reading__file md-file-link" data-file-path="${escapeHtml(p)}" title="${escapeHtml(p)}"><b>${escapeHtml(dtExtLabel(p))}</b>${escapeHtml(dtUploadDisplayName(p))}</a>`).join('')}</div>` : '');
-          el.innerHTML = `<div class="reading__user-wrap">${dtChatImageThumbs(m.images, '图片')}${uploads}${bubble}</div>`;
+          el.innerHTML = `<div class="reading__user-wrap">${dtChatImageThumbs(m.images, '图片')}${uploads}${bubble}</div>${text ? '<button type="button" class="reading__copy-message" data-dt-copy-message title="复制这条消息">复制</button>' : ''}`;
         } else if (m.role === 'assistant') {
           el.className = 'reading__assistant';
+          el._taktCopyText = m.text || '';
           if (!m._html) m._html = renderDocktermMarkdown(m.text || '');
-          el.innerHTML = m._html;
+          el.innerHTML = `${m._html}<button type="button" class="reading__copy-message" data-dt-copy-message title="复制这条回复">复制</button>`;
         } else if (m.role === 'tool' && m.tool) {
           const ok = m.tool.ok;
           el.className = `reading__tool${ok === false ? ' reading__tool--err' : ok === true ? ' reading__tool--ok' : ' reading__tool--pending'}`;
           el.title = `${m.tool.name}${m.tool.path ? `: ${m.tool.path}` : m.tool.summary ? `: ${m.tool.summary}` : ''}`;
           const summary = !m.tool.summary ? ''
             : m.tool.path
-              ? `<a href="#" class="reading__tool-summary md-file-link" data-file-path="${escapeHtml(m.tool.path)}" title="${escapeHtml(m.tool.path)}\n点击预览 · ⌘点击用 Mac 应用打开 · ⌥点击在 Finder 中显示">${escapeHtml(m.tool.summary)}</a>`
+              ? `<a href="#" class="reading__tool-summary md-file-link" data-file-path="${escapeHtml(m.tool.path)}" title="${escapeHtml(m.tool.path)}\n点击预览 · Ctrl/⌘ 点击用本机应用打开 · Alt/⌥ 点击在文件管理器中显示">${escapeHtml(m.tool.summary)}</a>`
               : `<span class="reading__tool-summary">${escapeHtml(m.tool.summary)}</span>`;
           el.innerHTML = `
             <span class="reading__tool-icon">${ok === false ? '✕' : ok === true ? '✓' : '●'}</span>
@@ -6937,11 +6971,48 @@
               ${imgs.length ? `<div class="reading__images">${imgs.map((a) => `<span class="reading__thumb"><img class="is-local" src="${escapeHtml(a.url)}" alt=""></span>`).join('')}</div>` : ''}
               ${files.length ? `<div class="reading__files">${files.map((a) => `<span class="reading__file"><b>${escapeHtml(dtExtLabel(a.name))}</b>${escapeHtml(a.name)}</span>`).join('')}</div>` : ''}
               ${(p.display ?? p.text) ? `<div class="reading__user-bubble">${escapeHtml(p.display ?? p.text)}</div>` : ''}
-              <span class="reading__meta">${p.failed ? '没有提交 · Claude Code 停在「Pasting…」，切到终端看看输入框'
-                : p.queued ? '排队中 · Claude 完成当前步骤后处理' : '发送中…'}</span>
+              <span class="reading__meta">${p.failed ? escapeHtml(p.failed)
+                : p.unconfirmed ? '已提交到终端，尚待会话记录确认；请先核对终端，勿重复发送'
+                : p.inflight ? '发送中…' : p.queued ? '排队中 · Claude 完成当前步骤后处理' : '已提交到终端 · 等待会话记录确认'}</span>
+              ${(p.failed || p.unconfirmed) && p.attempt ? `<button class="btn" data-recover-attempt="${p.id}">恢复文字和附件（发送前先核对终端）</button>` : ''}
             </div>
           </div>`;
         }).join('');
+        dtPendingEl.querySelectorAll('[data-recover-attempt]').forEach(button => button.addEventListener('click', () => {
+          const entry = c.pending.find(p => p.id === button.dataset.recoverAttempt);
+          if (!entry?.attempt || activeChatTab() !== t) return;
+          const a = entry.attempt;
+          const draft = dtDrafts.get(t.tabId) || '';
+          dtInput.value = draft ? draft + '\n\n' + a.text : a.text;
+          dtDrafts.set(t.tabId, dtInput.value);
+          dtAttachments.set(t.tabId, [...a.attachments, ...dtAttachList(t).filter(x => !a.attachments.includes(x))]);
+          dtDraftRevision.set(t.tabId, (dtDraftRevision.get(t.tabId) || 0) + 1);
+          renderDocktermAttachments(t); autoGrowDocktermComposer(); updateDocktermSendState();
+        }));
+      }
+
+      let dtLiveContext = '';
+      function renderDocktermLive(t) {
+        const c = t.chat;
+        const lastUser = (c.messages || []).filter(m => m.role === 'user').at(-1)?.id || '';
+        const context = JSON.stringify([t.tabId, c.resolvedSessionId || t.sessionId, c.epoch, lastUser]);
+        if (context !== dtLiveContext || c.status !== 'working') dtLiveDetails.open = false;
+        dtLiveContext = context;
+        dtLiveEl.hidden = c.status !== 'working';
+        if (dtLiveEl.hidden) {
+          dtLiveText.textContent = '';
+          dtLiveTail.textContent = '';
+          return;
+        }
+        const tail = c.tail || '';
+        const spinner = tail.split('\n').reverse().find(l => /^\s*[·✢✳✶✻✽∗*]\s+\S.*(?:…|\.\.\.)/.test(l));
+        // Only expose a duration from the active spinner, never a previous completion line or prose.
+        const duration = spinner?.match(/\(\s*((?:\d+(?:\.\d+)?[hms]\s*)+)(?:·|\))/)?.[1]?.trim();
+        dtLiveText.textContent = c.stale ? '连接暂不可用 · 执行状态待确认'
+          : 'Claude 正在执行' + (duration ? ' · ' + duration : '…');
+        dtLiveDetails.hidden = !tail.trim();
+        if (dtLiveDetails.hidden) dtLiveDetails.open = false;
+        dtLiveTail.textContent = tail; // plain text, diagnostic details only
       }
 
       function renderDocktermChrome(t) {
@@ -6951,6 +7022,7 @@
         dtInput.placeholder = c.status === 'working' ? 'Claude 正在执行… 可以继续输入，消息会排队发送'
           : c.status === 'asking' ? 'Claude 在等你确认上面的操作'
             : DT_PLACEHOLDER;
+        updateDocktermSuggestion();
 
         // load-earlier / beginning marker
         dtOlderBtn.hidden = !(c.hasOlder && c.messages.length > 0);
@@ -6986,15 +7058,7 @@
           dtEmptyEl.hidden = true;
         }
 
-        // live working card
-        if (c.status === 'working') {
-          dtLiveEl.hidden = false;
-          const spinner = (c.tail || '').split('\n').reverse().find((l) => /…/.test(l) && /^\s*[·✢✳✶✻✽∗*]/.test(l));
-          dtLiveText.textContent = spinner ? spinner.replace(/^\s*[·✢✳✶✻✽∗*]\s*/, '') : 'Claude 正在执行…';
-          dtLiveTail.textContent = (c.tail || '').split('\n').filter((l) => l !== spinner).join('\n');
-        } else {
-          dtLiveEl.hidden = true;
-        }
+        renderDocktermLive(t);
 
         // permission / question card
         if (c.status === 'asking' && c.ask) {
@@ -7152,7 +7216,20 @@
       }
 
       function applyDocktermData(t, data) {
+        if (data.tabId !== t.tabId) return;
         const c = ensureChatState(t);
+        c.bindingError = data.bindingError || '';
+        c.bindingToken = data.bindingToken || '';
+        if ((data.bindingSource || (!data.claudeRunning && data.jsonlPath)) && data.resolvedSessionId) {
+          if (c.resolvedSessionId && c.resolvedSessionId !== data.resolvedSessionId) {
+            c.previousAttempts = [...(c.previousAttempts || []), ...c.pending];
+            c.pending = []; // old attempts stay retained, never acknowledged by the resumed conversation
+          }
+          t.sessionId = data.resolvedSessionId;
+          t.resume = Boolean(data.jsonlPath);
+          const actual = foldersData.filter(f => f.nodeId === t.nodeId).flatMap(f => f.sessions || []).find(x => x.id === t.sessionId);
+          if (actual?.title) { t.title = cleanSessionTitle(actual.title, actual.id); renderTabBar(); }
+        }
         const prevStatus = c.status;
         const prevCmd = claudeLaunchCommand(t);
         let added = [];
@@ -7181,6 +7258,7 @@
         c.model = data.model || null;
         c.launch = data.launch || null;
         c.claudeCwd = data.claudeCwd || '';
+        c.suggestion = typeof data.suggestion === 'string' ? data.suggestion.trim() : '';
         if (c.modelOverride && c.model && c.model.ts > c.modelOverride.at) c.modelOverride = null;
 
         // Optimistic bubbles disappear once the transcript has the real message (a message typed while
@@ -7188,26 +7266,15 @@
         const now = Date.now();
         if (c.status === 'working' || c.status === 'asking') c.lastBusyAt = now;
         if (c.pending.length) {
-          const newUsers = added.filter((m) => m.role === 'user');
-          const norm = (x) => String(x || '').replace(/\s+/g, ' ').trim();
-          for (const u of newUsers) {
-            const i = c.pending.findIndex((p) => norm(p.text) === norm(u.text) || (u.ts && u.ts >= p.at - 3000));
-            if (i >= 0) c.pending.splice(i, 1);
-          }
-          // Claude takes queued messages as soon as it is idle: one that is still missing from the transcript
-          // after Claude has been idle for a while never arrived (or is still sitting in Claude's input box)
-          let lost = 0;
-          c.pending = c.pending.filter((p) => {
-            if (p.failed) return now - p.failedAt < 120000;
-            if (p.inflight) return true; // the node is still waiting for Claude Code to finish the paste
-            if (!c.stale && now - Math.max(p.sentAt || p.at, c.lastBusyAt || 0) > DT_PENDING_IDLE_MS) {
-              if (c.claudeRunning) lost += 1;
-              return false;
+          // Recheck all loaded rows: a poll may observe a message before the send request finishes.
+          // Match this attempt's content and time, never an unrelated recent user message.
+          c.pending = TaktInteractions.reconcilePending(c.pending, c.messages);
+          for (const p of c.pending) {
+            if (p.failed || p.inflight || p.unconfirmed) continue;
+            if (!c.stale && c.status === 'idle' && now - Math.max(p.sentAt || p.at, c.lastBusyAt || 0) > DT_PENDING_WAIT_MS) {
+              p.unconfirmed = true;
             }
-            return now - p.at < (p.queued ? 15 * 60000 : 60000);
-          });
-          if (lost && activeChatTab() === t) showToast(lost === 1 ? '有一条消息没有出现在对话记录里，可能还停在 Claude 的输入框（切到终端看看）'
-            : `有 ${lost} 条消息没有出现在对话记录里，可能还停在 Claude 的输入框（切到终端看看）`, 6000);
+          }
         }
         // Once Claude has written this tab's own session, later launches must resume it
         if (c.jsonlPath && c.resolvedSessionId === t.sessionId) t.resume = true;
@@ -7324,7 +7391,7 @@
         btnViewTerminal.classList.toggle('active', !inChat);
         btnViewChat.classList.toggle('active', inChat);
         btnViewTerminal.disabled = !t;
-        btnViewChat.disabled = !t;
+        btnViewChat.disabled = !t || t.mode === 'local';
         syncNativeTerminalGeometry();
         renderContextBar();
 
@@ -7366,6 +7433,7 @@
         if (!explicitMode && now - dtLastToggleAt < 300) return;
         dtLastToggleAt = now;
         const t = tabs.get(targetTabId);
+        if (t.mode === 'local') return;
         const next = explicitMode || (t.viewMode === 'chat' ? 'terminal' : 'chat');
         t.viewMode = next;
         if (next === 'chat') savedViewModes[t.tabId] = 'chat';
@@ -7386,7 +7454,6 @@
       const DT_USAGE_EVERY_MS = 10 * 60 * 1000;
       const DT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
       const DT_LINE_ORDER = ['fable', 'opus', 'sonnet', 'haiku'];
-      const dtUsageEl = document.getElementById('docktermUsage');
       const dtPicks = {
         model: { wrap: document.getElementById('docktermModelPick'), btn: document.getElementById('docktermModelBtn'), label: document.getElementById('docktermModelLabel'), menu: document.getElementById('docktermModelMenu'), title: '模型', cmd: '/model' },
         effort: { wrap: document.getElementById('docktermEffortPick'), btn: document.getElementById('docktermEffortBtn'), label: document.getElementById('docktermEffortLabel'), menu: document.getElementById('docktermEffortMenu'), title: 'Effort', cmd: '/effort' },
@@ -7448,6 +7515,7 @@
         if (!t || document.hidden) return;
         if (Date.now() - dtMetaFor(t).usageAt >= DT_USAGE_EVERY_MS) loadDocktermMeta(t, ['usage']);
       }, 30 * 1000);
+      setInterval(() => { if (!document.hidden) renderNodeFilterBar(); }, 60 * 1000);
 
       function dtResetText(iso) {
         const at = Date.parse(iso || '');
@@ -7464,23 +7532,35 @@
         return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 重置`;
       }
 
-      function renderDocktermUsage(t) {
-        const meta = t ? dtMetaFor(t) : null;
+      // Usage lives on the node pill (top-left), not under the composer. Shown only while the data is fresh.
+      const DT_USAGE_FRESH_MS = 25 * 60 * 1000;
+      function dtFreshUsage(nodeId) {
+        const meta = dtNodeMeta.get(nodeId || '');
         const u = meta && meta.usage;
-        if (!u || (!u.fiveHour && !u.week)) {
-          dtUsageEl.hidden = true;
-          return;
-        }
-        const meter = (label, x) => {
+        if (!u || (!u.fiveHour && !u.week)) return null;
+        if (u.source === 'cache' || meta.usageError) return null;
+        const at = Number(u.fetchedAt) || meta.usageAt || 0;
+        if (!at || Date.now() - at > DT_USAGE_FRESH_MS) return null;
+        return { meta, u };
+      }
+
+      function dtNodeUsageHtml(nodeId) {
+        const f = dtFreshUsage(nodeId);
+        if (!f) return '';
+        const { u } = f;
+        const part = (label, x) => {
           if (!x) return '';
           const pct = Math.max(0, Math.min(100, Math.round(Number(x.pct) || 0)));
           const cls = pct >= 90 ? ' is-crit' : pct >= 75 ? ' is-warn' : '';
-          const r = 9;
-          const len = 2 * Math.PI * r;
-          const arc = pct > 0 ? Math.max(1.5, (len * pct) / 100) : 0;
-          return `<span class="usage-meter${cls}"><span>${label}</span><span class="usage-ring"><svg viewBox="0 0 22 22" aria-hidden="true"><circle class="usage-ring__track" cx="11" cy="11" r="${r}"/>${arc ? `<circle class="usage-ring__value" cx="11" cy="11" r="${r}" stroke-dasharray="${arc.toFixed(2)} ${len.toFixed(2)}"/>` : ''}</svg><span class="usage-ring__num${pct >= 100 ? ' is-full' : ''}">${pct}</span></span></span>`;
+          return `<span class="node-pill-usage${cls}">${label} ${pct}%</span>`;
         };
-        dtUsageEl.innerHTML = meter('5h', u.fiveHour) + meter('周', u.week);
+        return part('5h', u.fiveHour) + part('周', u.week);
+      }
+
+      function dtNodeUsageTitle(nodeId) {
+        const f = dtFreshUsage(nodeId);
+        if (!f) return '';
+        const { meta, u } = f;
         const lines = [];
         const withReset = (text, iso) => {
           const r = dtResetText(iso);
@@ -7491,12 +7571,12 @@
         if (u.weekOpus) lines.push(`本周 Opus ${Math.round(u.weekOpus.pct)}%`);
         if (u.weekSonnet) lines.push(`本周 Sonnet ${Math.round(u.weekSonnet.pct)}%`);
         const when = u.fetchedAt ? new Date(u.fetchedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-        lines.push(u.source === 'cache'
-          ? `来自 Claude Code 的缓存（${when}）· 实时查询失败：${meta.usageError || '未知原因'}`
-          : `更新于 ${when} · 每 10 分钟刷新${meta.plan ? ` · ${meta.plan}` : ''}`);
-        dtUsageEl.title = lines.join('\n');
-        dtUsageEl.classList.toggle('is-stale', u.source === 'cache');
-        dtUsageEl.hidden = false;
+        lines.push(`更新于 ${when} · 每 10 分钟刷新${meta.plan ? ` · ${meta.plan}` : ''}`);
+        return lines.join('\n');
+      }
+
+      function renderDocktermUsage() {
+        renderNodeFilterBar();
       }
 
       function dtModelLabel(m) {
@@ -7725,12 +7805,12 @@
         }
       }, true);
 
-      function launchClaudeInActiveTab() {
+      async function launchClaudeInActiveTab() {
         if (!activeTabId || !tabs.has(activeTabId)) return;
         const t = tabs.get(activeTabId);
         const cmd = claudeLaunchCommand(t, { forShell: true });
-        sendDocktermRawInput(t, cmd, true);
-        showToast(`已在远端运行：${cmd}`);
+        const result = await sendDocktermRawInput(t, cmd, true, 'terminal');
+        if (result?.ok) showToast(`已在远端运行：${cmd}`);
         kickDocktermPoll(1200);
       }
 
@@ -7743,9 +7823,38 @@
       function updateDocktermSendState() {
         const t = activeChatTab();
         const atts = t ? dtAttachList(t) : [];
-        dtSendBtn.disabled = dtSubmitting || (!dtInput.value.trim() && !atts.length);
+        dtSendBtn.disabled = dtSubmitting || Boolean(t?.chat?.sending) || (!dtInput.value.trim() && !atts.length);
         const label = dtSendBtn.querySelector('span');
         if (label) label.textContent = dtSubmitting ? '上传中…' : '发送';
+        updateDocktermSuggestion();
+      }
+
+      // Claude Code's prompt suggestion for this tab: only while Claude waits for input and nothing of ours is in flight
+      function docktermSuggestion(t) {
+        const c = t && t.chat;
+        if (!c || !c.suggestion || c.stale || c.bindingError || c.sending || !c.claudeRunning || c.status !== 'idle') return '';
+        if (Date.now() < (c.suggestionHoldUntil || 0) || c.pending.some((p) => !p.failed)) return '';
+        return c.suggestion;
+      }
+
+      function updateDocktermSuggestion() {
+        const t = activeChatTab();
+        const s = !dtInput.value && (!t || !dtAttachList(t).length) ? docktermSuggestion(t) : '';
+        dtComposerBox.classList.toggle('has-suggestion', Boolean(s));
+        dtSuggestBtn.hidden = !s;
+        if (s) dtSuggestBtn.style.top = `${dtInput.offsetTop + 1}px`;
+        if (!dtInput.value && t && t.chat && t.chat.status === 'idle') dtInput.placeholder = s || DT_PLACEHOLDER;
+      }
+
+      function acceptDocktermSuggestion() {
+        const t = activeChatTab();
+        const s = dtInput.value || (t && dtAttachList(t).length) ? '' : docktermSuggestion(t);
+        if (!s) return false;
+        dtInput.value = s;
+        dtInput.focus();
+        dtInput.setSelectionRange(s.length, s.length);
+        dtInput.dispatchEvent(new Event('input'));
+        return true;
       }
 
       function insertIntoDocktermComposer(text) {
@@ -7757,6 +7866,50 @@
         const caret = start + prefix.length + text.length;
         dtInput.setSelectionRange(caret, caret);
         dtInput.dispatchEvent(new Event('input'));
+      }
+
+      function insertDocktermClipboardText(text) {
+        const value = String(text ?? '').replace(/\r\n?/g, '\n');
+        if (!value) return false;
+        const start = dtInput.selectionStart ?? dtInput.value.length;
+        const end = dtInput.selectionEnd ?? start;
+        dtInput.setRangeText(value, start, end, 'end');
+        dtInput.focus();
+        dtInput.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+
+      async function pasteClipboardIntoDockterm() {
+        dtInput.focus();
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.read === 'function') {
+            const items = await navigator.clipboard.read();
+            const files = [];
+            let text = '';
+            for (const item of items) {
+              const imageType = item.types.find((type) => /^image\//i.test(type));
+              if (imageType) {
+                const blob = await item.getType(imageType);
+                const ext = (imageType.split('/')[1] || 'png').replace('jpeg', 'jpg');
+                files.push(new File([blob], `pasted-image.${ext}`, { type: imageType }));
+              } else if (!text && item.types.includes('text/plain')) {
+                text = await (await item.getType('text/plain')).text();
+              }
+            }
+            if (files.length) {
+              addDocktermAttachments(files);
+              return;
+            }
+            if (insertDocktermClipboardText(text)) return;
+          }
+          if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+            const text = await navigator.clipboard.readText();
+            if (insertDocktermClipboardText(text)) return;
+          }
+          showToast('剪贴板中没有可粘贴的文字或图片');
+        } catch {
+          showToast('浏览器未允许读取剪贴板；请在输入框内按 Ctrl+V');
+        }
       }
 
       function updateDocktermSlashMenu() {
@@ -7928,20 +8081,32 @@
       // rendered picture (Excel, Word …) still pastes as text.
       dtInput.addEventListener('paste', (e) => {
         const cd = e.clipboardData;
-        const files = cd ? Array.from(cd.files || []) : [];
-        if (!files.length) return;
-        const text = (cd.getData('text/plain') || '').trim();
-        const names = new Set(files.map((f) => f.name));
-        const textIsNames = !text || /^(https?|file):\/\//i.test(text) || text.split(/\r?\n/).every((l) => !l.trim() || names.has(l.trim()) || names.has(l.trim().split('/').pop()));
-        if (!textIsNames && files.every((f) => /^image\//.test(f.type))) return;
-        e.preventDefault();
-        addDocktermAttachments(files);
+        if (!cd) return;
+        const directFiles = Array.from(cd.files || []);
+        const files = directFiles.length ? directFiles : Array.from(cd.items || []).map((item) => item.kind === 'file' ? item.getAsFile() : null).filter(Boolean);
+        const rawText = cd.getData('text/plain') || '';
+        if (files.length) {
+          const text = rawText.trim();
+          const names = new Set(files.map((f) => f.name));
+          const textIsNames = !text || /^(https?|file):\/\//i.test(text) || text.split(/\r?\n/).every((l) => !l.trim() || names.has(l.trim()) || names.has(l.trim().split('/').pop()));
+          if (textIsNames || !files.every((f) => /^image\//.test(f.type))) {
+            e.preventDefault();
+            addDocktermAttachments(files);
+            return;
+          }
+        }
+        if (rawText) {
+          e.preventDefault();
+          insertDocktermClipboardText(rawText);
+        }
       });
 
+      const dtDraftRevision = new Map();
       async function submitDocktermComposerPrompt() {
         const t = activeChatTab();
         if (!t || dtSubmitting) return;
         const c = ensureChatState(t);
+        if (c.sending) return;
         const typed = dtInput.value.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
         const isCommand = typed.startsWith('/');
         const atts = isCommand ? [] : dtAttachList(t).slice();
@@ -7967,10 +8132,13 @@
         }
         const paths = atts.map((a) => a.remotePath);
         const text = paths.length ? `${typed}${typed ? '\n\n' : ''}${paths.map((p) => DT_ATTACH_LABEL + p).join('\n')}` : typed;
-        if (c.loaded && !c.claudeRunning && !c.stale) {
-          // Without Claude the text would be executed by the shell
-          if (!confirm('这个标签页里似乎没有运行 Claude，消息会直接输入到 shell。\n\n仍然发送吗？（建议先点「启动 Claude」）')) return;
+        if (!c.loaded || !c.claudeRunning || c.stale || !c.bindingToken || c.bindingError) {
+          showToast(c.bindingError || '请等待会话核实，或先启动 Claude；文字已保留');
+          kickDocktermPoll(100); return;
         }
+        c.sending = true;
+        const attempt = { text: typed, attachments: atts, revision: dtDraftRevision.get(t.tabId) || 0 };
+
 
         if (typed.trim()) {
           const hist = dtHistory.get(t.tabId) || [];
@@ -7980,6 +8148,9 @@
         }
         dtHistCursor.delete(t.tabId);
 
+        // the suggestion on screen belongs to the turn that just ended; a poll already in flight may still carry it
+        c.suggestion = '';
+        c.suggestionHoldUntil = Date.now() + 2500;
         dtInput.value = '';
         dtDrafts.set(t.tabId, '');
         if (atts.length) dtAttachments.set(t.tabId, dtAttachList(t).filter((a) => !atts.includes(a)));
@@ -7989,7 +8160,7 @@
         updateDocktermSendState();
 
         const isPicker = DOCKTERM_PICKER_SLASH_RE.test(text);
-        const pendingId = `p${Date.now()}`;
+        const pendingId = generateUUID();
         if (!isCommand) {
           c.pending.push({
             id: pendingId,
@@ -7998,7 +8169,9 @@
             atts: atts.map((a) => ({ name: a.name, isImage: a.isImage, url: a.url })),
             queued: c.status === 'working',
             inflight: true,
+            knownUserIds: (c.messages || []).filter(m => m.role === 'user').map(m => m.id),
             at: Date.now(),
+            attempt,
           });
           renderDocktermPending(t);
           renderDocktermChrome(t);
@@ -8006,13 +8179,21 @@
         dtPinned = true;
         requestAnimationFrame(scrollDocktermToBottom);
 
-        const sent = await sendDocktermRawInput(t, text, true);
-        const sentEntry = c.pending.find((x) => x.id === pendingId);
+        let sent;
+        try { sent = await sendDocktermRawInput(t, text, true); }
+        finally { c.sending = false; if (activeChatTab() === t) updateDocktermSendState(); }
+        const sentEntry = c.pending.find(x => x.id === pendingId);
         if (sentEntry) Object.assign(sentEntry, { inflight: false, sentAt: Date.now() });
-        if (sent && sent.stuck) {
-          if (sentEntry) Object.assign(sentEntry, { failed: 'pasting', failedAt: Date.now() });
-          if (activeChatTab() === t) renderDocktermPending(t);
-          showToast('Claude Code 一直显示「Pasting…」，消息没有提交。切到终端看看它的输入框', 6000);
+        if (!sent?.ok) {
+          if (sentEntry) Object.assign(sentEntry, { failed: sent?.error || '发送失败', failedAt: Date.now() });
+          // Unknown / partial delivery must be checked in the terminal before the user retries.
+          if (sent?.delivered === false || sent?.delivered === undefined) {
+            const restored = TaktInteractions.restoreFailedAttempt(dtDrafts.get(t.tabId) || '', dtAttachList(t), dtDraftRevision.get(t.tabId) || 0, attempt);
+            dtDrafts.set(t.tabId, restored.draft); dtAttachments.set(t.tabId, restored.attachments);
+            if (activeChatTab() === t) { dtInput.value = restored.draft; renderDocktermAttachments(t); autoGrowDocktermComposer(); }
+          }
+          if (activeChatTab() === t) { renderDocktermPending(t); updateDocktermSendState(); }
+          return;
         }
 
         if (isPicker) {
@@ -8023,8 +8204,11 @@
         kickDocktermPoll(350);
       }
 
+      dtSuggestBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      dtSuggestBtn.addEventListener('click', () => acceptDocktermSuggestion());
+
       dtInput.addEventListener('input', () => {
-        if (activeTabId) dtDrafts.set(activeTabId, dtInput.value);
+        if (activeTabId) { dtDrafts.set(activeTabId, dtInput.value); dtDraftRevision.set(activeTabId, (dtDraftRevision.get(activeTabId) || 0) + 1); }
         if (activeTabId && dtHistCursor.has(activeTabId)) {
           const hist = dtHistory.get(activeTabId) || [];
           if (dtInput.value !== hist[dtHistCursor.get(activeTabId)]) dtHistCursor.delete(activeTabId);
@@ -8056,6 +8240,12 @@
             dtSlashMenu.classList.remove('open');
             return;
           }
+        }
+
+        // Tab takes Claude Code's suggestion (shown as the placeholder), like in the terminal
+        if (e.key === 'Tab' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && acceptDocktermSuggestion()) {
+          e.preventDefault();
+          return;
         }
 
         // Answer a permission prompt with its number key while the composer is empty
@@ -8127,7 +8317,7 @@
       dtJumpBtn.addEventListener('click', scrollDocktermToBottom);
       dtOlderBtn.addEventListener('click', loadOlderDockterm);
 
-      // ---------------------------------------------------------------- files & images: open on the Mac
+      // ---------------------------------------------------------------- files & images: open on the local client
       async function openDocktermFileOnMac(t, { path: p, chatImage, reveal = false, label = '' } = {}) {
         const name = label || (p ? dtStripLine(p).split('/').pop() : '图片');
         try {
@@ -8143,7 +8333,7 @@
             showToast(data.error || `无法打开 ${name}`);
             return;
           }
-          const how = data.mode === 'reveal' ? '已在 Finder 中显示' : data.mode === 'text' ? '已在文本编辑器中打开' : '已用 Mac 应用打开';
+          const how = data.mode === 'reveal' ? '已在文件管理器中显示' : data.mode === 'text' ? '已在文本编辑器中打开' : '已用本机应用打开';
           showToast(`${how}：${name}${data.fromRemote && !chatImage ? '（已从节点拷贝到本机）' : ''}`);
         } catch {
           showToast(`无法打开 ${name}`);
@@ -8155,7 +8345,7 @@
         const base = clean.split('/').pop();
         const extMatch = base.toLowerCase().match(/(\.[a-z0-9_-]+)$/);
         const ext = extMatch ? extMatch[1] : '';
-        // Previewable (code, images, web) -> right pane; CAD / EDA / office / media -> its Mac app
+        // Previewable content -> right pane; CAD / EDA / office / media -> a host application
         if (checkClientPreviewEligibility({ name: base, ext, size: 0 }).allowed) {
           previewFileInRightPane(p, (t && t.cwd) || currentFilesCwd, false, (t && t.nodeId) || currentFilesNodeId);
         } else {
@@ -8203,6 +8393,19 @@
       }, true);
 
       dtStage.addEventListener('click', (e) => {
+        const messageCopyBtn = e.target.closest('[data-dt-copy-message]');
+        if (messageCopyBtn) {
+          const messageEl = messageCopyBtn.closest('.reading__user, .reading__assistant');
+          copyTextToClipboard((messageEl && messageEl._taktCopyText) || '').then((ok) => {
+            if (!ok) {
+              showToast('复制失败，请选中文字后按 Ctrl+C');
+              return;
+            }
+            messageCopyBtn.textContent = '已复制';
+            setTimeout(() => { messageCopyBtn.textContent = '复制'; }, 1200);
+          });
+          return;
+        }
         const thumb = e.target.closest('.reading__thumb');
         if (thumb) {
           e.preventDefault();
@@ -8228,10 +8431,14 @@
         const copyBtn = e.target.closest('.md-code-copy');
         if (copyBtn) {
           const code = copyBtn.closest('.md-code').querySelector('pre').textContent;
-          navigator.clipboard.writeText(code).then(() => {
+          copyTextToClipboard(code).then((ok) => {
+            if (!ok) {
+              showToast('复制失败，请选中文字后按 Ctrl+C');
+              return;
+            }
             copyBtn.textContent = '已复制';
             setTimeout(() => { copyBtn.textContent = '复制'; }, 1200);
-          }, () => showToast('复制失败'));
+          });
           return;
         }
         const expand = e.target.closest('.reading__expand');
@@ -8257,8 +8464,17 @@
         kickDocktermPoll(0);
       });
       dtSendBtn.addEventListener('click', () => submitDocktermComposerPrompt());
+      dtPasteBtn.addEventListener('click', pasteClipboardIntoDockterm);
       dtInterruptBtn.addEventListener('click', sendDocktermInterrupt);
       document.getElementById('btnLiveInterrupt').addEventListener('click', sendDocktermInterrupt);
+
+      // Chromium reserves Ctrl+Shift+C for its element inspector. Disable that browser action
+      // throughout the workbench; the web terminal's handler can still copy its own selection.
+      window.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'c') {
+          e.preventDefault();
+        }
+      }, true);
 
       // ⌘E (or Ctrl+Shift+E) toggles the active tab between terminal and conversation view
       window.toggleDocktermChatMode = toggleDocktermChatMode;
@@ -8275,8 +8491,12 @@
       syncDocktermViewUI();
 
       // Initial Boot
+      document.getElementById('btnLocalTerminal').addEventListener('click', () => {
+        const node = getNodeInfo(currentFilesNodeId);
+        openOrSwitchTerminalTab({ tabId: `local-${Date.now()}`, title: '本机终端', cwd: node.remoteWorkDir || '/root/work', nodeId: node.id, mode: 'local', resume: false });
+      });
       loadProjectTree();
-      loadSessionFiles('/root/work', 'korea-claude');
+      loadSessionFiles('/root/work', 'node-1');
       pollStatusBar();
       setInterval(pollStatusBar, 4000);
       setInterval(loadProjectTree, 12000);
