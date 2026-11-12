@@ -1,5 +1,7 @@
 # Configuration
 
+Windows users: see [Windows 11 guide](WINDOWS11.md). Data defaults to `%USERPROFILE%\.takt-ai`; overrides in its `env` file are parsed as literal KEY=value lines. `TAKT_SSH_BIN` overrides Windows OpenSSH, `TAKT_PYTHON` selects optional Python, and `TAKT_BLENDER_BIN`, `TAKT_FREECAD_CMD`, `TAKT_FREECAD_GUI`, `TAKT_EASYEDA_EXE`, `TAKT_CHROME_BIN`, `TAKT_JLINK_EXE`, `TAKT_DFU_UTIL`, `TAKT_IDF_EXPORT_PS1`, `TAKT_TAILSCALE_BIN` select optional Windows tools. Values may contain spaces without shell escaping. The `mac_` tool prefixes are retained for compatibility.
+
 All settings are optional — defaults work out of the box. Set variables in your shell, or (recommended) put `KEY=value` lines into **`$TAKT_HOME/env`** (default `~/.takt-ai/env`); `scripts/start.sh` and the desktop app load it.
 
 ## Environment variables
@@ -15,6 +17,7 @@ All settings are optional — defaults work out of the box. Set variables in you
 | `TAKT_MCP_TOKEN` | *(generated)* | MCP server, provisioning | Override the bearer token instead of using `$TAKT_HOME/mcp-token`. |
 | `TAKT_EDA_PORT` | `49620` | MCP server, tunnels | First port of the optional EasyEDA bridge range (`+0…+9`); also forwarded to servers. |
 | `TAKT_AUTO_ALLOW_HOST_EXEC` | unset | provisioning | `1` → write an *allow* rule for `mac_host_exec` on servers instead of *ask*. |
+| `TAKT_CHROMIUM_BIN` | auto-detected | MCP server | Override the Chrome/Edge executable used by `mac_browser_chrome_extract` (use a WSL path for a Windows executable). |
 | `TAKT_WORKSPACE_LINK_DIR` | unset | workbench | If set, `<alias> → <local work dir>` symlinks are created in this folder (handy to open mirrors from an IDE workspace). |
 | `TAKT_SYNCTHING_URL` | `http://127.0.0.1:8384` | workbench, MCP server | Local Syncthing REST endpoint. |
 | `TAKT_SYNCTHING_CONFIG` | auto-detect | workbench, MCP server | Path to Syncthing's `config.xml` (API key is read from it). Auto-detect order: `~/Library/Application Support/Syncthing`, `~/.local/state/syncthing`, `~/.config/syncthing`. |
