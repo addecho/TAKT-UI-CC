@@ -132,3 +132,7 @@ See [SECURITY.md](SECURITY.md). In short: both HTTP servers listen on loopback o
 ### Transcript acknowledgment
 
 A successful terminal write is distinct from a confirmed transcript record. Pending messages match the same conversation's user records, keeping attachment paths and ignoring only Claude Code's standalone `pasted_content` wrappers and whitespace. Existing record IDs and older timestamps cannot acknowledge a new attempt. Every poll reconciles loaded rows, including records received while the send request was in flight. Idle time alone never marks delivery as failed or retries it; a delayed record gets a neutral unconfirmed notice and manual recovery. Explicit transport failures retain the recoverable text and attachments.
+
+### Live execution card
+
+The conversation execution card displays a generic working state and, when present, the duration from Claude's active spinner. Terminal screen tails are not turn-scoped replies or a thinking transcript: they remain available only in a collapsed, labeled terminal-details disclosure. Details close on tab/session/transcript/turn changes and after work finishes. Conversation replies and tool calls continue to come from the bound session's JSONL records. This presentation does not change sent prompts or remote task control.

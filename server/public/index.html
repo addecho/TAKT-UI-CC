@@ -2258,7 +2258,7 @@
       white-space: nowrap;
     }
 
-    /* Live "working" card with the last lines of the terminal */
+    /* Execution status; raw terminal text is optional diagnostic detail. */
     .reading__live {
       padding: 10px 12px;
       border-radius: var(--radius-md);
@@ -2285,6 +2285,18 @@
       animation: docktermPulse 1.2s infinite ease-in-out;
     }
     .reading__live-head .btn { margin-left: auto; height: 21px; font-size: calc(10.5px * var(--fs, 1)); padding: 0 8px; }
+    .reading__live-details summary {
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: calc(11px * var(--fs, 1));
+      padding: 3px 0;
+    }
+    .reading__live-note {
+      margin: 4px 0 7px;
+      color: var(--text-secondary);
+      font-size: calc(11px * var(--fs, 1));
+      line-height: 1.5;
+    }
     .reading__live-tail {
       margin: 0;
       padding: 7px 9px;
@@ -3115,7 +3127,11 @@
                       <span id="docktermLiveText">Claude 正在执行…</span>
                       <button type="button" class="btn" id="btnLiveInterrupt">中断 (Esc)</button>
                     </div>
-                    <pre class="reading__live-tail" id="docktermLiveTail"></pre>
+                    <details class="reading__live-details" id="docktermLiveDetails">
+                      <summary>终端详情（可能包含历史文字）</summary>
+                      <p class="reading__live-note">以下为当前终端末尾片段，可能包含上一轮内容，不代表本轮回复或思考。</p>
+                      <pre class="reading__live-tail" id="docktermLiveTail"></pre>
+                    </details>
                   </div>
                   <div class="askcard" id="docktermAsk" hidden></div>
                 </div>
@@ -6437,6 +6453,7 @@
       const dtLiveEl = document.getElementById('docktermLive');
       const dtLiveText = document.getElementById('docktermLiveText');
       const dtLiveTail = document.getElementById('docktermLiveTail');
+      const dtLiveDetails = document.getElementById('docktermLiveDetails');
       const dtAskEl = document.getElementById('docktermAsk');
       const dtJumpBtn = document.getElementById('docktermJumpBtn');
       const dtOlderBtn = document.getElementById('docktermOlderBtn');
@@ -7000,6 +7017,30 @@
         }));
       }
 
+      let dtLiveContext = '';
+      function renderDocktermLive(t) {
+        const c = t.chat;
+        const lastUser = (c.messages || []).filter(m => m.role === 'user').at(-1)?.id || '';
+        const context = JSON.stringify([t.tabId, c.resolvedSessionId || t.sessionId, c.epoch, lastUser]);
+        if (context !== dtLiveContext || c.status !== 'working') dtLiveDetails.open = false;
+        dtLiveContext = context;
+        dtLiveEl.hidden = c.status !== 'working';
+        if (dtLiveEl.hidden) {
+          dtLiveText.textContent = '';
+          dtLiveTail.textContent = '';
+          return;
+        }
+        const tail = c.tail || '';
+        const spinner = tail.split('\n').reverse().find(l => /^\s*[·✢✳✶✻✽∗*]\s+\S.*(?:…|\.\.\.)/.test(l));
+        // Only expose a duration from the active spinner, never a previous completion line or prose.
+        const duration = spinner?.match(/\(\s*((?:\d+(?:\.\d+)?[hms]\s*)+)(?:·|\))/)?.[1]?.trim();
+        dtLiveText.textContent = c.stale ? '连接暂不可用 · 执行状态待确认'
+          : 'Claude 正在执行' + (duration ? ' · ' + duration : '…');
+        dtLiveDetails.hidden = !tail.trim();
+        if (dtLiveDetails.hidden) dtLiveDetails.open = false;
+        dtLiveTail.textContent = tail; // plain text, diagnostic details only
+      }
+
       function renderDocktermChrome(t) {
         const c = t.chat;
         const busy = c.status === 'working' || c.status === 'asking';
@@ -7042,15 +7083,7 @@
           dtEmptyEl.hidden = true;
         }
 
-        // live working card
-        if (c.status === 'working') {
-          dtLiveEl.hidden = false;
-          const spinner = (c.tail || '').split('\n').reverse().find((l) => /…/.test(l) && /^\s*[·✢✳✶✻✽∗*]/.test(l));
-          dtLiveText.textContent = spinner ? spinner.replace(/^\s*[·✢✳✶✻✽∗*]\s*/, '') : 'Claude 正在执行…';
-          dtLiveTail.textContent = (c.tail || '').split('\n').filter((l) => l !== spinner).join('\n');
-        } else {
-          dtLiveEl.hidden = true;
-        }
+        renderDocktermLive(t);
 
         // permission / question card
         if (c.status === 'asking' && c.ask) {

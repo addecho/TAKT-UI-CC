@@ -156,3 +156,35 @@ test('same text in older history or with another attachment cannot acknowledge a
   assert.equal(TaktInteractions.reconcilePending([{ text, at }, { text, at }],
     [{ id: 'new', role: 'user', ts: at, text }]).length, 1);
 });
+
+function liveCardFixture() {
+  const el = () => ({ hidden: false, textContent: '', open: false });
+  const c = vm.createContext({ dtLiveEl: el(), dtLiveText: el(), dtLiveTail: el(), dtLiveDetails: el() });
+  vm.runInContext(section('      let dtLiveContext =', '      function renderDocktermChrome('), c);
+  return c;
+}
+test('execution card exposes current duration; previous conversation stays in collapsed diagnostics', () => {
+  const c = liveCardFixture();
+  const tail = 'old reply\n✻ Baked for 1m 46s · done 2:18 AM\nRead file\n✻ Actioning… (6s · ↓ 102 tokens)';
+  c.renderDocktermLive({ tabId: 'A', sessionId: 'S', chat: { status: 'working', tail } });
+  assert.equal(c.dtLiveText.textContent, 'Claude 正在执行 · 6s');
+  assert.equal(c.dtLiveDetails.open, false); assert.equal(c.dtLiveTail.textContent, tail);
+  assert.equal(c.dtLiveEl.hidden, false);
+});
+test('terminal details stay open during polling but close on turns, tabs, sessions, and idle', () => {
+  const c = liveCardFixture(), t = { tabId: 'A', sessionId: 'S', chat: { status: 'working', tail: 'terminal', messages: [{ role: 'user', id: 'U' }] } };
+  c.renderDocktermLive(t); c.dtLiveDetails.open = true; c.renderDocktermLive(t);
+  assert.equal(c.dtLiveDetails.open, true);
+  for (const change of [() => { t.chat.messages.push({ role: 'user', id: 'next' }); },
+    () => { t.tabId = 'B'; }, () => { t.chat.resolvedSessionId = 'T'; }, () => { t.chat.epoch = 'reset'; }]) {
+    c.dtLiveDetails.open = true; change(); c.renderDocktermLive(t); assert.equal(c.dtLiveDetails.open, false);
+  }
+  t.chat.status = 'idle'; c.dtLiveDetails.open = true; c.renderDocktermLive(t);
+  assert.equal(c.dtLiveEl.hidden, true); assert.equal(c.dtLiveDetails.open, false); assert.equal(c.dtLiveTail.textContent, '');
+});
+test('missing spinner never borrows historical completion time; stale status does not claim live execution', () => {
+  const c = liveCardFixture(), t = { tabId: 'A', chat: { status: 'working', tail: '✻ Baked for 1m 46s · done 2:18 AM' } };
+  c.renderDocktermLive(t); assert.equal(c.dtLiveText.textContent, 'Claude 正在执行…');
+  t.chat.stale = true; c.renderDocktermLive(t); assert.equal(c.dtLiveText.textContent, '连接暂不可用 · 执行状态待确认');
+  t.chat.tail = ''; c.renderDocktermLive(t); assert.equal(c.dtLiveDetails.hidden, true);
+});
