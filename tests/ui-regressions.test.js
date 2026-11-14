@@ -15,6 +15,13 @@ test('every inline browser script parses', () => {
   for (const m of ui.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) if (m[1].trim()) new Function(m[1]);
 });
 
+test('status bar exposes a visible pause and resume control for Syncthing', () => {
+  assert.match(ui, /id="pillSyncthing"/);
+  assert.match(ui, /status-pill--action/);
+  assert.match(ui, /\/api\/sync-control/);
+  assert.match(ui, /同步已暂停/);
+});
+
 test('actual file loader discards an earlier response after switching projects', async () => {
   const pending = [], elements = new Map();
   const c = vm.createContext({ TaktInteractions, AbortController, currentFilesCwd: '', currentFilesNodeId: 'N',

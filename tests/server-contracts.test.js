@@ -13,6 +13,13 @@ function section(s, start, end) {
   assert(a >= 0 && b > a); return s.slice(a, b);
 }
 
+test('sync control only reaches Syncthing through the local authenticated API', () => {
+  assert.match(source, /function setSyncthingPaused\(syncthingPaused\)/);
+  assert.match(source, /\/rest\/system\/\$\{action\}/);
+  assert.match(source, /'X-API-Key': apiKey/);
+  assert.match(source, /u\.pathname === '\/api\/sync-control'/);
+});
+
 test('chat view exports verified session and binding fields required for submission', async () => {
   const bound = { path: '', host: 'fixture', resolvedSessionId: 'S', bindingToken: 'binding',
     bindingSource: 'process-registry', bindingError: '', claudeRunning: true, stale: false };

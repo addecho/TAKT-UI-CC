@@ -44,6 +44,7 @@ const MCP_SERVER_SCRIPT = path.join(cfg.REPO_ROOT, 'mcp-server', 'server.js');
 const NODES_FILE = cfg.NODES_FILE;
 const SESSION_TITLES_FILE = cfg.SESSION_TITLES_FILE;
 const WORKBENCH_DB_FILE = cfg.DB_FILE;
+const SYNC_CONTROL_FILE = path.join(BASE_TAKT_DIR, 'sync-control.json');
 const LOCAL_WORK_DIR = cfg.DEFAULT_WORK_DIR;
 const WORKBENCH_LOG = path.join(cfg.LOG_DIR, 'workbench-web.log');
 const MCP_TOKEN = cfg.getMcpToken();
@@ -251,6 +252,38 @@ function getSyncthingApiKey() {
   } catch {
     return null;
   }
+}
+
+function readSyncControl() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(SYNC_CONTROL_FILE, 'utf8'));
+    return { syncthingPaused: Boolean(saved?.syncthingPaused), updatedAt: Number(saved?.updatedAt) || 0 };
+  } catch {
+    return { syncthingPaused: false, updatedAt: 0 };
+  }
+}
+
+function saveSyncControl(syncthingPaused) {
+  const temporary = `${SYNC_CONTROL_FILE}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ syncthingPaused: Boolean(syncthingPaused), updatedAt: Date.now() }, null, 2));
+  fs.renameSync(temporary, SYNC_CONTROL_FILE);
+}
+
+async function setSyncthingPaused(syncthingPaused) {
+  const apiKey = getSyncthingApiKey();
+  if (!apiKey) throw Error('未找到 Syncthing API 配置，请先启动 Syncthing。');
+  const action = syncthingPaused ? 'pause' : 'resume';
+  const response = await fetch(`${SYNCTHING_URL}/rest/system/${action}`, {
+    method: 'POST',
+    headers: { 'X-API-Key': apiKey },
+    signal: AbortSignal.timeout(4000),
+  });
+  if (!response.ok) {
+    const detail = (await response.text()).trim();
+    throw Error(`Syncthing 无法${syncthingPaused ? '暂停' : '恢复'}${detail ? `：${detail}` : ''}`);
+  }
+  saveSyncControl(syncthingPaused);
+  return readSyncControl();
 }
 
 async function configureLocalSyncthing(node, logs = []) {
@@ -1525,6 +1558,7 @@ const MIME_MAP = {
 // 4. Bottom Status Bar Aggregator (Multi-Node SSH + Tailscale + MCP + Syncthing)
 // ============================================================================
 async function getCombinedSystemStatus() {
+  const syncControl = readSyncControl();
   let mcpData = null;
   try {
     const ctrl = new AbortController();
@@ -1618,6 +1652,8 @@ if ($candidate) { [Console]::Out.Write($candidate) }
     },
     syncthing: {
       ok: Boolean(mcpData?.diskSync?.connected) || (mcpData?.diskSync?.inSyncFiles > 0),
+      paused: syncControl.syncthingPaused,
+      controlAvailable: Boolean(getSyncthingApiKey()),
       connected: Boolean(mcpData?.diskSync?.connected),
       state: mcpData?.diskSync?.state || 'idle',
       inSyncFiles: mcpData?.diskSync?.inSyncFiles || 0,
@@ -3571,6 +3607,18 @@ const server = http.createServer(async (req, res) => {
       directoryPickerBusy = true;
       try { sendJson(res, 200, { ok: true, path: await pickDesktopDirectory() }); }
       finally { directoryPickerBusy = false; }
+      return;
+    }
+    if (req.method === 'GET' && u.pathname === '/api/sync-control') {
+      const control = readSyncControl();
+      sendJson(res, 200, { ok: true, paused: control.syncthingPaused, updatedAt: control.updatedAt, available: Boolean(getSyncthingApiKey()) });
+      return;
+    }
+    if (req.method === 'POST' && u.pathname === '/api/sync-control') {
+      const body = await readJsonBody(req);
+      if (typeof body.paused !== 'boolean') throw Error('paused 必须为布尔值');
+      const control = await setSyncthingPaused(body.paused);
+      sendJson(res, 200, { ok: true, paused: control.syncthingPaused, updatedAt: control.updatedAt });
       return;
     }
     if (req.method === 'GET' && u.pathname === '/api/project-sync/status') {

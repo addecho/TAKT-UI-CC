@@ -1726,6 +1726,21 @@
       white-space: nowrap;
     }
 
+    .status-pill--action {
+      cursor: pointer;
+    }
+
+    .status-pill--action:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      background: var(--bg-hover);
+    }
+
+    .status-pill--action:disabled {
+      cursor: not-allowed;
+      opacity: 0.62;
+    }
+
     .status-dot {
       width: 6px;
       height: 6px;
@@ -3379,10 +3394,10 @@
           <span class="status-dot" id="dotMcp"></span>
           <span id="textMcp">MCP</span>
         </div>
-        <div class="status-pill" id="pillSyncthing" title="Syncthing 文件同步">
+        <button type="button" class="status-pill status-pill--action" id="pillSyncthing" title="暂停或恢复本机 Syncthing 文件同步" aria-pressed="false">
           <span class="status-dot" id="dotSyncthing"></span>
           <span id="textSyncthing">Syncthing</span>
-        </div>
+        </button>
       </div>
 
       <div class="status-group">
@@ -5912,14 +5927,19 @@
 
           const needFiles = Number(st.syncthing.needFiles || 0);
           const needBytes = Number(st.syncthing.needBytes || 0);
+          const syncPaused = Boolean(st.syncthing.paused);
           const fmtBytes = (n) => n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
-          dotSync.className = `status-dot ${st.syncthing.ok && needFiles === 0 ? 'ok' : 'warn'}`;
-          textSync.textContent = needFiles > 0
+          dotSync.className = `status-dot ${syncPaused ? 'warn' : st.syncthing.ok && needFiles === 0 ? 'ok' : 'warn'}`;
+          textSync.textContent = syncPaused ? '同步已暂停' : needFiles > 0
             ? `同步中 ${needFiles} 个文件${needBytes ? ` · ${fmtBytes(needBytes)}` : ''}`
             : st.syncthing.ok ? 'Syncthing' : 'Syncthing 未连接';
-          document.getElementById('pillSyncthing').title = needFiles > 0
+          const syncButton = document.getElementById('pillSyncthing');
+          syncButton.dataset.paused = String(syncPaused);
+          syncButton.setAttribute('aria-pressed', String(syncPaused));
+          syncButton.disabled = !st.syncthing.controlAvailable;
+          syncButton.title = syncPaused ? '同步已暂停 · 点击恢复同步' : needFiles > 0
             ? `Syncthing 待同步 ${needFiles} 个文件`
-            : st.syncthing.ok ? 'Syncthing 已同步' : 'Syncthing 未连接';
+            : st.syncthing.ok ? 'Syncthing 已同步 · 点击暂停同步' : 'Syncthing 未连接';
 
           // Automatically trigger self-heal if MCP tunnel or SSH is down
           if ((!st.mcp.ok || !st.ssh.online) && Date.now() - lastAutoHealAt > 8000) {
@@ -6068,6 +6088,25 @@
           const d = await (await fetch('/api/project-sync/status')).json();
           document.getElementById('syncProjectMappings').textContent = d.projects.map(m => `${m.localPath} ↔ ${m.remotePath}\n状态：${m.error || m.state} · 待同步 ${m.needFiles ?? '--'} 个文件 · 错误 ${m.errors ?? '--'}`).join('\n\n');
         } catch { document.getElementById('syncProjectResult').textContent = '暂时无法读取同步状态'; }
+      });
+      document.getElementById('pillSyncthing').addEventListener('click', async () => {
+        const button = document.getElementById('pillSyncthing');
+        const paused = button.dataset.paused === 'true';
+        button.disabled = true;
+        try {
+          const res = await fetch('/api/sync-control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paused: !paused }),
+          });
+          const result = await res.json();
+          if (!res.ok || !result.ok) throw Error(result.error || '同步状态更新失败');
+          showToast(result.paused ? 'Syncthing 已暂停：文件与配置均保留' : 'Syncthing 已恢复同步');
+          await pollStatusBar();
+        } catch (err) {
+          showToast(err.message || '无法更新同步状态');
+          button.disabled = false;
+        }
       });
       document.getElementById('syncPick').addEventListener('click', async () => {
         const button = document.getElementById('syncPick'); const result = document.getElementById('syncProjectResult');
