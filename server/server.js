@@ -836,6 +836,17 @@ workbenchDb.exec(`
     last_sync_at INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS terminal_tabs (
+    tab_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'claude',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (node_id, tab_id)
+  );
+
   -- Project classification tags (Antigravity-style sidebar tags)
   CREATE TABLE IF NOT EXISTS tags (
     id TEXT PRIMARY KEY,
@@ -926,6 +937,93 @@ const stmtRegisterLocalSession = workbenchDb.prepare(`
     deleted = 0,
     updated_at = MAX(sessions.updated_at, excluded.updated_at)
 `);
+
+const stmtUpsertTerminalTab = workbenchDb.prepare(`
+  INSERT INTO terminal_tabs (tab_id, node_id, session_id, title, cwd, mode, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(node_id, tab_id) DO UPDATE SET
+    session_id = excluded.session_id,
+    title = excluded.title,
+    cwd = excluded.cwd,
+    mode = excluded.mode,
+    updated_at = excluded.updated_at
+`);
+
+const stmtDeleteTerminalTab = workbenchDb.prepare(`
+  DELETE FROM terminal_tabs WHERE node_id = ? AND tab_id = ?
+`);
+
+function readPersistedTerminalTabs() {
+  const nodes = new Map(loadNodes().map((node) => [node.id, node]));
+  return workbenchDb.prepare(`
+    SELECT tab_id, node_id, session_id, title, cwd, mode, updated_at
+    FROM terminal_tabs
+    ORDER BY updated_at ASC
+  `).all().flatMap((row) => {
+    const node = nodes.get(row.node_id);
+    if (!node || node.enabled === false) return [];
+    return [{
+      tabId: row.tab_id,
+      sessionId: row.session_id,
+      title: row.title,
+      cwd: row.cwd,
+      nodeId: node.id,
+      nodeName: node.name,
+      nodeBadge: node.badge,
+      sshHost: node.sshHost,
+      localWorkDir: node.localWorkDir,
+      localWorkAlias: node.localWorkAlias,
+      mode: row.mode,
+      createdAt: Number(row.updated_at || 0),
+    }];
+  });
+}
+
+async function listRecoverableRemoteTabs() {
+  const nodes = loadNodes().filter((node) => node.enabled !== false && node.sshHost);
+  const sessionRows = workbenchDb.prepare(`
+    SELECT id, node_id, project_path, title, updated_at
+    FROM sessions WHERE deleted = 0 ORDER BY updated_at DESC
+  `).all();
+  const persisted = new Set(readPersistedTerminalTabs().map((tab) => `${tab.nodeId}::${sanitizeTmuxSessionId(tab.tabId)}`));
+  const active = new Set(Array.from(activePtyTabs.values()).map((tab) => `${tab.nodeId}::${sanitizeTmuxSessionId(tab.tabId)}`));
+  const results = await Promise.all(nodes.map(async (node) => {
+    const listed = await runCmd('ssh', [
+      '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=4',
+      '-o', 'ClearAllForwardings=yes',
+      node.sshHost,
+      "tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_created}' 2>/dev/null || true",
+    ], 6000).catch(() => null);
+    if (!listed || listed.exitCode !== 0) return [];
+    return listed.stdout.split(/\r?\n/).flatMap((line) => {
+      const [tmuxName, attachedRaw, createdRaw] = line.split('|');
+      const match = /^takt_([A-Za-z0-9_-]{1,28})$/.exec(String(tmuxName || '').trim());
+      if (!match) return [];
+      const key = `${node.id}::${tmuxName}`;
+      if (persisted.has(key) || active.has(key)) return [];
+      const prefix = match[1];
+      const matches = sessionRows.filter((row) => row.node_id === node.id && String(row.id).startsWith(prefix));
+      const session = matches.length === 1 ? matches[0] : null;
+      const sessionId = session ? session.id : prefix;
+      return [{
+        tabId: sessionId,
+        sessionId,
+        title: session?.title || `远端任务 ${prefix.slice(0, 8)}`,
+        cwd: session?.project_path || node.remoteWorkDir || '/root/work',
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeBadge: node.badge,
+        sshHost: node.sshHost,
+        localWorkAlias: node.localWorkAlias,
+        mode: 'claude',
+        attached: Number(attachedRaw || 0) > 0,
+        createdAt: Number(createdRaw || 0) * 1000,
+      }];
+    });
+  }));
+  return results.flat().sort((a, b) => b.createdAt - a.createdAt);
+}
 
 const stmtRenameSession = workbenchDb.prepare(`
   UPDATE sessions
@@ -1355,6 +1453,11 @@ function getOrCreatePtyTab({ tabId, sessionId, title, cwd, resume, mode, nodeId,
   });
 
   activePtyTabs.set(tabId, tabObj);
+  if (!ephemeral) {
+    try {
+      stmtUpsertTerminalTab.run(tabId, node.id, sid, tabObj.title, targetCwd, tabObj.mode, Date.now());
+    } catch {}
+  }
   return tabObj;
 }
 
@@ -1362,10 +1465,17 @@ function sanitizeTmuxSessionId(tabId) { return sessionName(tabId); }
 
 function closePtyTab(tabId, explicitNodeId) {
   const tab = activePtyTabs.get(tabId);
-  if (!tab || (explicitNodeId && tab.nodeId !== explicitNodeId)) return false;
+  if (!tab) {
+    if (explicitNodeId) {
+      try { stmtDeleteTerminalTab.run(explicitNodeId, tabId); } catch {}
+    }
+    return false;
+  }
+  if (explicitNodeId && tab.nodeId !== explicitNodeId) return false;
   const node = getNodeById(explicitNodeId || (tab && tab.nodeId));
   const targetHost = tab.mode === 'local' ? '' : tab.sshHost || (node && node.sshHost) || '';
   const tmuxSess = sanitizeTmuxSessionId(tabId);
+  try { stmtDeleteTerminalTab.run(tab.nodeId, tabId); } catch {}
   docktermTabs.delete(`${targetHost}::${tmuxSess}`);
   if (targetHost) {
     runCmd('ssh', [
@@ -3463,7 +3573,7 @@ const server = http.createServer(async (req, res) => {
         syncAllNodesToSqlite().catch(() => {});
       }
       const tree = readTreeFromSqlite();
-      const openTabs = Array.from(activePtyTabs.values()).filter(t => !t.ephemeral).map((t) => ({
+      const liveTabs = Array.from(activePtyTabs.values()).filter(t => !t.ephemeral).map((t) => ({
         tabId: t.tabId,
         sessionId: t.sessionId,
         title: t.title,
@@ -3477,7 +3587,36 @@ const server = http.createServer(async (req, res) => {
         mode: t.mode,
         createdAt: t.createdAt,
       }));
+      const liveKeys = new Set(liveTabs.map((tab) => `${tab.nodeId}::${tab.tabId}`));
+      const openTabs = [
+        ...readPersistedTerminalTabs().filter((tab) => !liveKeys.has(`${tab.nodeId}::${tab.tabId}`)),
+        ...liveTabs,
+      ];
       sendJson(res, 200, { ...tree, ...readTagsFromSqlite(), openTabs });
+      return;
+    }
+
+    // API: Discover tmux tasks that survived a browser/workbench restart but are not tracked locally.
+    if (req.method === 'GET' && u.pathname === '/api/remote-sessions') {
+      const sessions = await listRecoverableRemoteTabs();
+      sendJson(res, 200, { ok: true, sessions });
+      return;
+    }
+
+    // API: Persist an explicitly recovered remote tmux task before opening its terminal.
+    if (req.method === 'POST' && u.pathname === '/api/remote-sessions/recover') {
+      const body = await readJsonBody(req);
+      const node = requireNode(String(body.nodeId || ''), '');
+      const tabId = String(body.tabId || '').trim();
+      const sessionId = String(body.sessionId || tabId).trim();
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(tabId) || !/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) {
+        throw new InteractionError(400, '无效的远端会话标识');
+      }
+      const title = String(body.title || `远端任务 ${tabId.slice(0, 8)}`).trim().slice(0, 160);
+      const cwd = normalizeToTopProjectPath(node, String(body.cwd || node.remoteWorkDir || '/root/work'));
+      stmtUpsertTerminalTab.run(tabId, node.id, sessionId, title, cwd, 'claude', Date.now());
+      registerSessionInSqlite({ id: sessionId, nodeId: node.id, cwd, title });
+      sendJson(res, 200, { ok: true });
       return;
     }
 

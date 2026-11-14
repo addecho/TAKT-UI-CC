@@ -22,6 +22,17 @@ test('status bar exposes a visible pause and resume control for Syncthing', () =
   assert.match(ui, /同步已暂停/);
 });
 
+test('remote tmux tasks remain discoverable and recoverable after the local workbench restarts', () => {
+  const server = fs.readFileSync(require('node:path').join(__dirname, '../server/server.js'), 'utf8');
+  assert.match(ui, /id="btnRecoverRemote"/);
+  assert.match(ui, /\/api\/remote-sessions\/recover/);
+  assert.match(ui, /refreshRecoverableSessions/);
+  assert.match(server, /CREATE TABLE IF NOT EXISTS terminal_tabs/);
+  assert.match(server, /tmux list-sessions -F/);
+  assert.match(server, /stmtUpsertTerminalTab/);
+  assert.match(server, /ws\.on\('close',[\s\S]*?tab\.clients\.delete\(ws\)/);
+});
+
 test('actual file loader discards an earlier response after switching projects', async () => {
   const pending = [], elements = new Map();
   const c = vm.createContext({ TaktInteractions, AbortController, currentFilesCwd: '', currentFilesNodeId: 'N',

@@ -648,6 +648,24 @@
       outline: none;
     }
     .tag-menu-input:focus { border-color: var(--border-accent); }
+    #btnRecoverRemote { position: relative; }
+    #btnRecoverRemote[hidden] { display: none !important; }
+    #btnRecoverRemote.has-sessions::after {
+      content: attr(data-count);
+      position: absolute;
+      right: -3px;
+      top: -3px;
+      min-width: 13px;
+      height: 13px;
+      padding: 0 3px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: var(--bg-primary);
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 13px;
+      text-align: center;
+    }
     .tag-swatches { display: flex; gap: 6px; padding: 8px 6px 4px; flex-wrap: wrap; }
     .tag-swatch {
       width: 16px; height: 16px; border-radius: 50%;
@@ -3106,6 +3124,9 @@
             </button>
           </div>
           <div class="header-actions">
+            <button class="btn btn-icon btn-ghost" id="btnRecoverRemote" title="恢复 VPS 上仍在运行的任务" aria-label="恢复远端任务" hidden>
+              <svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+            </button>
             <button class="btn btn-icon btn-ghost" id="btnOpenNodeManager" title="管理机器节点">
               <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
             </button>
@@ -3630,6 +3651,8 @@
 
       let terminalEngine = hasNativeHost ? 'native' : 'web';
       let nodesData = [];
+      let recoverableRemoteSessions = [];
+      let recoverableSessionsCheckedAt = 0;
       let sshCandidatesData = [];
       let selectedNodeFilter = 'all'; // 'all' or node.id
       let foldersData = [];
@@ -4045,9 +4068,47 @@
             }
             renderProjectTree();
           }
+          refreshRecoverableSessions(forceSync).catch(() => {});
         } catch (err) {
           console.error('Failed to load project tree:', err);
         }
+      }
+
+      async function refreshRecoverableSessions(force = false) {
+        if (!force && Date.now() - recoverableSessionsCheckedAt < 15000) return recoverableRemoteSessions;
+        recoverableSessionsCheckedAt = Date.now();
+        const res = await fetch('/api/remote-sessions');
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '无法读取远端任务');
+        recoverableRemoteSessions = Array.isArray(data.sessions) ? data.sessions : [];
+        const btn = document.getElementById('btnRecoverRemote');
+        btn.hidden = recoverableRemoteSessions.length === 0;
+        btn.classList.toggle('has-sessions', recoverableRemoteSessions.length > 0);
+        btn.dataset.count = String(Math.min(99, recoverableRemoteSessions.length));
+        btn.title = recoverableRemoteSessions.length
+          ? `恢复 VPS 上仍在运行的任务（${recoverableRemoteSessions.length}）`
+          : '没有待恢复的远端任务';
+        return recoverableRemoteSessions;
+      }
+
+      async function recoverRemoteSession(session) {
+        const res = await fetch('/api/remote-sessions/recover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(session),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '恢复失败');
+        openOrSwitchTerminalTab({ ...session, resume: true, activate: true });
+        recoverableRemoteSessions = recoverableRemoteSessions.filter((item) =>
+          item.nodeId !== session.nodeId || item.tabId !== session.tabId
+        );
+        const btn = document.getElementById('btnRecoverRemote');
+        btn.hidden = recoverableRemoteSessions.length === 0;
+        btn.classList.toggle('has-sessions', recoverableRemoteSessions.length > 0);
+        btn.dataset.count = String(Math.min(99, recoverableRemoteSessions.length));
+        closeTagMenu();
+        showToast(`已恢复：${session.title}`);
       }
 
       let showEmptyFolders = false;
@@ -6014,6 +6075,44 @@
       });
 
       document.getElementById('btnRefreshTree').addEventListener('click', () => loadProjectTree(true));
+      document.getElementById('btnRecoverRemote').addEventListener('click', async (event) => {
+        try {
+          await refreshRecoverableSessions(true);
+          if (recoverableRemoteSessions.length === 0) {
+            showToast('没有待恢复的远端任务');
+            return;
+          }
+          openTagMenu(event.currentTarget, (menu) => {
+            const title = document.createElement('div');
+            title.className = 'tag-menu-title';
+            title.textContent = 'VPS 上仍在运行 · 选择一个恢复';
+            menu.appendChild(title);
+            for (const session of recoverableRemoteSessions.slice(0, 20)) {
+              const nodeLabel = session.nodeBadge || session.nodeName || 'VPS';
+              const state = session.attached ? '已连接' : '后台运行';
+              const item = menuItem(
+                `<span class="tag-dot" style="background:${session.attached ? 'var(--success)' : 'var(--warning)'}"></span>` +
+                `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(session.title)}</span>` +
+                `<span style="margin-left:auto;color:var(--text-muted);font-size:10px">${escapeHtml(nodeLabel)} · ${state}</span>`,
+                async () => {
+                  try { await recoverRemoteSession(session); }
+                  catch (err) { showToast(err.message || '恢复失败', 7000); }
+                }
+              );
+              item.title = `${session.title} · ${nodeLabel} · ${state}`;
+              menu.appendChild(item);
+            }
+            if (recoverableRemoteSessions.length > 20) {
+              const more = document.createElement('div');
+              more.className = 'tag-menu-title';
+              more.textContent = `另有 ${recoverableRemoteSessions.length - 20} 个旧任务未显示`;
+              menu.appendChild(more);
+            }
+          });
+        } catch (err) {
+          showToast(err.message || '无法读取远端任务', 7000);
+        }
+      });
       document.getElementById('btnRefreshFiles').addEventListener('click', () => loadSessionFiles(currentFilesCwd, currentFilesNodeId));
       document.getElementById('fileSearchInput').addEventListener('input', () => renderFileTree());
 
