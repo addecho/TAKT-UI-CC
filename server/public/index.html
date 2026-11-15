@@ -648,6 +648,11 @@
       outline: none;
     }
     .tag-menu-input:focus { border-color: var(--border-accent); }
+    .tag-menu.remote-task-menu { width: min(390px, calc(100vw - 16px)); max-width: 390px; }
+    .remote-task-row { display: flex; align-items: center; gap: 3px; }
+    .remote-task-row > .tag-menu-item:first-child { min-width: 0; flex: 1; }
+    .remote-task-row > .remote-task-end { width: 30px; flex: 0 0 30px; padding: 0; justify-content: center; color: var(--text-muted); }
+    .remote-task-row > .remote-task-end:hover { color: var(--danger); background: var(--danger-bg); }
     #btnRecoverRemote { position: relative; }
     #btnRecoverRemote[hidden] { display: none !important; }
     #btnRecoverRemote.has-sessions::after {
@@ -3124,7 +3129,7 @@
             </button>
           </div>
           <div class="header-actions">
-            <button class="btn btn-icon btn-ghost" id="btnRecoverRemote" title="恢复 VPS 上仍在运行的任务" aria-label="恢复远端任务" hidden>
+            <button class="btn btn-icon btn-ghost" id="btnRecoverRemote" title="管理 VPS 上的远端任务" aria-label="管理远端任务" hidden>
               <svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
             </button>
             <button class="btn btn-icon btn-ghost" id="btnOpenNodeManager" title="管理机器节点">
@@ -4086,8 +4091,8 @@
         btn.classList.toggle('has-sessions', recoverableRemoteSessions.length > 0);
         btn.dataset.count = String(Math.min(99, recoverableRemoteSessions.length));
         btn.title = recoverableRemoteSessions.length
-          ? `恢复 VPS 上仍在运行的任务（${recoverableRemoteSessions.length}）`
-          : '没有待恢复的远端任务';
+          ? `管理 VPS 上的远端任务（${recoverableRemoteSessions.length}）`
+          : '没有正在运行的远端任务';
         return recoverableRemoteSessions;
       }
 
@@ -4100,15 +4105,29 @@
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || '恢复失败');
         openOrSwitchTerminalTab({ ...session, resume: true, activate: true });
+        session.tracked = true;
+        session.active = true;
+        closeTagMenu();
+        showToast(`已打开：${session.title}`);
+      }
+
+      async function terminateRemoteSession(session) {
+        const confirmed = confirm(`结束远端任务“${session.title}”？\n\n这会终止 VPS 上对应的 tmux 和 Claude 进程，但不会删除对话记录。`);
+        if (!confirmed) return;
+        const res = await fetch('/api/remote-sessions/terminate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(session),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '结束远端任务失败');
+        if (tabs.has(session.tabId)) await closeTerminalTab(session.tabId, { terminateRemote: false });
         recoverableRemoteSessions = recoverableRemoteSessions.filter((item) =>
           item.nodeId !== session.nodeId || item.tabId !== session.tabId
         );
-        const btn = document.getElementById('btnRecoverRemote');
-        btn.hidden = recoverableRemoteSessions.length === 0;
-        btn.classList.toggle('has-sessions', recoverableRemoteSessions.length > 0);
-        btn.dataset.count = String(Math.min(99, recoverableRemoteSessions.length));
         closeTagMenu();
-        showToast(`已恢复：${session.title}`);
+        await loadProjectTree(true);
+        showToast(data.killed ? `已结束远端任务：${session.title}` : `远端任务已不在运行：${session.title}`);
       }
 
       let showEmptyFolders = false;
@@ -4158,6 +4177,7 @@
       document.body.appendChild(tagMenu);
       function openTagMenu(anchorEl, buildFn) {
         tagMenu.innerHTML = '';
+        tagMenu.classList.remove('remote-task-menu');
         buildFn(tagMenu);
         tagMenu.hidden = false;
         const r = anchorEl.getBoundingClientRect();
@@ -5028,7 +5048,7 @@
         if (tabEl) tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       }
 
-      async function closeTerminalTab(tabId) {
+      async function closeTerminalTab(tabId, { terminateRemote = true } = {}) {
         const tabObj = tabs.get(tabId);
         if (!tabObj) return;
 
@@ -5036,11 +5056,13 @@
 
         try {
           if (tabObj.ws && tabObj.ws.readyState === WebSocket.OPEN) {
-            tabObj.ws.send(JSON.stringify({ type: 'kill' }));
+            if (terminateRemote) tabObj.ws.send(JSON.stringify({ type: 'kill' }));
             tabObj.ws.close();
           }
         } catch {}
-        await fetch(`/api/tabs?tabId=${encodeURIComponent(tabId)}&nodeId=${encodeURIComponent(tabObj.nodeId || '')}`, { method: 'DELETE' }).catch(() => {});
+        if (terminateRemote) {
+          await fetch(`/api/tabs?tabId=${encodeURIComponent(tabId)}&nodeId=${encodeURIComponent(tabObj.nodeId || '')}`, { method: 'DELETE' }).catch(() => {});
+        }
 
         try { tabObj.term.dispose(); } catch {}
         try { tabObj.wrapEl.remove(); } catch {}
@@ -6076,20 +6098,22 @@
 
       document.getElementById('btnRefreshTree').addEventListener('click', () => loadProjectTree(true));
       document.getElementById('btnRecoverRemote').addEventListener('click', async (event) => {
+        const anchor = event.currentTarget;
         try {
           await refreshRecoverableSessions(true);
           if (recoverableRemoteSessions.length === 0) {
-            showToast('没有待恢复的远端任务');
+            showToast('没有正在运行的远端任务');
             return;
           }
-          openTagMenu(event.currentTarget, (menu) => {
+          openTagMenu(anchor, (menu) => {
+            menu.classList.add('remote-task-menu');
             const title = document.createElement('div');
             title.className = 'tag-menu-title';
-            title.textContent = 'VPS 上仍在运行 · 选择一个恢复';
+            title.textContent = 'VPS 上正在运行 · 可打开或直接结束';
             menu.appendChild(title);
             for (const session of recoverableRemoteSessions.slice(0, 20)) {
               const nodeLabel = session.nodeBadge || session.nodeName || 'VPS';
-              const state = session.attached ? '已连接' : '后台运行';
+              const state = session.active ? '已打开' : session.attached ? '已连接' : '后台运行';
               const item = menuItem(
                 `<span class="tag-dot" style="background:${session.attached ? 'var(--success)' : 'var(--warning)'}"></span>` +
                 `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(session.title)}</span>` +
@@ -6100,7 +6124,16 @@
                 }
               );
               item.title = `${session.title} · ${nodeLabel} · ${state}`;
-              menu.appendChild(item);
+              const end = menuItem('×', async () => {
+                try { await terminateRemoteSession(session); }
+                catch (err) { showToast(err.message || '结束远端任务失败', 7000); }
+              }, 'remote-task-end');
+              end.title = `结束远端任务：${session.title}`;
+              end.setAttribute('aria-label', `结束远端任务：${session.title}`);
+              const row = document.createElement('div');
+              row.className = 'remote-task-row';
+              row.append(item, end);
+              menu.appendChild(row);
             }
             if (recoverableRemoteSessions.length > 20) {
               const more = document.createElement('div');

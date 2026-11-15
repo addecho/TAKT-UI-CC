@@ -26,9 +26,14 @@ test('remote tmux tasks remain discoverable and recoverable after the local work
   const server = fs.readFileSync(require('node:path').join(__dirname, '../server/server.js'), 'utf8');
   assert.match(ui, /id="btnRecoverRemote"/);
   assert.match(ui, /\/api\/remote-sessions\/recover/);
+  assert.match(ui, /\/api\/remote-sessions\/terminate/);
   assert.match(ui, /refreshRecoverableSessions/);
+  assert.match(ui, /const anchor = event\.currentTarget;[\s\S]*?openTagMenu\(anchor,/);
+  assert.match(ui, /closeTerminalTab\(tabId, \{ terminateRemote = true \} = \{\}\)/);
   assert.match(server, /CREATE TABLE IF NOT EXISTS terminal_tabs/);
   assert.match(server, /tmux list-sessions -F/);
+  assert.match(server, /\/api\/remote-sessions\/terminate/);
+  assert.match(server, /tmux kill-session -t/);
   assert.match(server, /stmtUpsertTerminalTab/);
   assert.match(server, /ws\.on\('close',[\s\S]*?tab\.clients\.delete\(ws\)/);
 });

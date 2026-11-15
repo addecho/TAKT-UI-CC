@@ -979,14 +979,20 @@ function readPersistedTerminalTabs() {
   });
 }
 
-async function listRecoverableRemoteTabs() {
+async function listRemoteTmuxTabs() {
   const nodes = loadNodes().filter((node) => node.enabled !== false && node.sshHost);
   const sessionRows = workbenchDb.prepare(`
     SELECT id, node_id, project_path, title, updated_at
     FROM sessions WHERE deleted = 0 ORDER BY updated_at DESC
   `).all();
-  const persisted = new Set(readPersistedTerminalTabs().map((tab) => `${tab.nodeId}::${sanitizeTmuxSessionId(tab.tabId)}`));
-  const active = new Set(Array.from(activePtyTabs.values()).map((tab) => `${tab.nodeId}::${sanitizeTmuxSessionId(tab.tabId)}`));
+  const persisted = new Map(readPersistedTerminalTabs().map((tab) => [
+    `${tab.nodeId}::${sanitizeTmuxSessionId(tab.tabId)}`,
+    tab,
+  ]));
+  const active = new Map(Array.from(activePtyTabs.values()).map((tab) => [
+    `${tab.nodeId}::${sanitizeTmuxSessionId(tab.tabId)}`,
+    tab,
+  ]));
   const results = await Promise.all(nodes.map(async (node) => {
     const listed = await runCmd('ssh', [
       '-o', 'BatchMode=yes',
@@ -1001,16 +1007,18 @@ async function listRecoverableRemoteTabs() {
       const match = /^takt_([A-Za-z0-9_-]{1,28})$/.exec(String(tmuxName || '').trim());
       if (!match) return [];
       const key = `${node.id}::${tmuxName}`;
-      if (persisted.has(key) || active.has(key)) return [];
+      const persistedTab = persisted.get(key);
+      const activeTab = active.get(key);
+      const trackedTab = activeTab || persistedTab;
       const prefix = match[1];
       const matches = sessionRows.filter((row) => row.node_id === node.id && String(row.id).startsWith(prefix));
       const session = matches.length === 1 ? matches[0] : null;
-      const sessionId = session ? session.id : prefix;
+      const sessionId = trackedTab?.sessionId || session?.id || prefix;
       return [{
-        tabId: sessionId,
+        tabId: trackedTab?.tabId || sessionId,
         sessionId,
-        title: session?.title || `远端任务 ${prefix.slice(0, 8)}`,
-        cwd: session?.project_path || node.remoteWorkDir || '/root/work',
+        title: trackedTab?.title || session?.title || `远端任务 ${prefix.slice(0, 8)}`,
+        cwd: trackedTab?.cwd || session?.project_path || node.remoteWorkDir || '/root/work',
         nodeId: node.id,
         nodeName: node.name,
         nodeBadge: node.badge,
@@ -1018,6 +1026,8 @@ async function listRecoverableRemoteTabs() {
         localWorkAlias: node.localWorkAlias,
         mode: 'claude',
         attached: Number(attachedRaw || 0) > 0,
+        tracked: Boolean(persistedTab),
+        active: Boolean(activeTab),
         createdAt: Number(createdRaw || 0) * 1000,
       }];
     });
@@ -3596,10 +3606,39 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // API: Discover tmux tasks that survived a browser/workbench restart but are not tracked locally.
+    // API: Discover all TAKT-managed tmux tasks, including locally tracked ones.
     if (req.method === 'GET' && u.pathname === '/api/remote-sessions') {
-      const sessions = await listRecoverableRemoteTabs();
+      const sessions = await listRemoteTmuxTabs();
       sendJson(res, 200, { ok: true, sessions });
+      return;
+    }
+
+    // API: End a remote tmux task without requiring it to be reopened locally first.
+    if (req.method === 'POST' && u.pathname === '/api/remote-sessions/terminate') {
+      const body = await readJsonBody(req);
+      const node = requireNode(String(body.nodeId || ''), '');
+      const tabId = String(body.tabId || '').trim();
+      const sessionId = String(body.sessionId || tabId).trim();
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(tabId) || !/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) {
+        throw new InteractionError(400, '无效的远端会话标识');
+      }
+      const tmuxSess = sanitizeTmuxSessionId(tabId);
+      const closedActiveTab = closePtyTab(tabId, node.id);
+      try { stmtDeleteTerminalTab.run(node.id, tabId); } catch {}
+      docktermTabs.delete(`${node.sshHost}::${tmuxSess}`);
+      let killed = closedActiveTab;
+      if (!closedActiveTab) {
+        const result = await runCmd('ssh', [
+          '-o', 'BatchMode=yes',
+          '-o', 'ConnectTimeout=4',
+          '-o', 'ClearAllForwardings=yes',
+          node.sshHost,
+          `if tmux has-session -t ${shSingleQuote(tmuxSess)} 2>/dev/null; then tmux kill-session -t ${shSingleQuote(tmuxSess)} && printf killed; else printf missing; fi`,
+        ], 6000);
+        if (result.exitCode !== 0) throw new InteractionError(502, '结束远端任务失败');
+        killed = result.stdout.includes('killed');
+      }
+      sendJson(res, 200, { ok: true, killed });
       return;
     }
 
