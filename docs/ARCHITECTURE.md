@@ -2,11 +2,11 @@
 
 > 简体中文版: [zh-CN/ARCHITECTURE.md](zh-CN/ARCHITECTURE.md)
 
-TAKT-UI-CC has three runtime pieces on your Mac and a very small footprint on each server.
+TAKT-UI-CC has three runtime pieces on the local client (macOS or Windows/WSL2) and a very small footprint on each server.
 
 ```mermaid
 flowchart TB
-  subgraph Mac
+  subgraph Client["Local client — macOS or Windows/WSL2"]
     direction TB
     APP["Desktop app (Swift) — WKWebView + SwiftTerm\nor any browser at http://127.0.0.1:3080"]
     WB["server/server.js  (:3080, loopback)\nREST /api/* · WebSocket /ws/term · static UI"]
@@ -57,12 +57,12 @@ Each node owns **one** local folder, **one** Syncthing folder id and **one** tun
 
 `provisionLinuxNode()` in `server/server.js`:
 
-1. creates the local folder and registers it as a Syncthing folder (Mac side);
+1. creates the local folder and registers it as a Syncthing folder (client side);
 2. builds the MCP reverse tunnel: `ssh -M -S <sock> -Nf -R 18765:127.0.0.1:18765 -R 49620:127.0.0.1:49620 <host>`;
 3. runs a small `python3` snippet on the server that
    - creates the remote work dir (falls back to `~/Documents/work` / `~/work` for non-root users),
    - writes the `mac-industrial` MCP server (URL + `Authorization: Bearer <token>`) into `~/.claude.json`,
-   - adds `mcp__mac-industrial` to `permissions.allow` and `mac_host_exec` to `permissions.ask` in `~/.claude/settings.json`,
+   - pre-approves only `work_sync_status` and writes explicit `permissions.ask` rules for local inspection/mutation tools in `~/.claude/settings.json`,
    - reports the server's Syncthing device id;
 4. **pairs Syncthing in both directions** using each side's local REST API (`PUT /rest/config/devices/<id>` + `PUT /rest/config/folders/<id>`), so files start syncing without manual steps.
 
@@ -98,9 +98,21 @@ Two interchangeable engines (switch in the top bar):
 
 Right-hand tree and preview use the **local mirror** only (`/api/files`, `/api/file-content`, `/api/raw-file`). Paths coming from the terminal (`/home/dev/work/x/y.png`) are mapped to the mirror by comparing against each node's `remoteWorkDir`. Preview limits: images ≤ 12 MB, HTML ≤ 2 MB, code/text ≤ 200 KB, binaries skipped. Mutating endpoints (`move`, `upload`, `mkdir`) refuse any path outside `$TAKT_HOME`.
 
+## 4a. Conversation and file interaction guarantees
+
+Conversation ownership is `(node, Claude session)`, independently of the stable tab/tmux ID. The live PID registry in `~/.claude/sessions/<pid>.json` is authoritative; explicit CLI session arguments support older clients. The inspector never selects a transcript by modification time. An unverified or duplicate binding is unavailable for chat input. Refreshing the sidebar restores tabs without changing the current selection.
+
+Chat submissions carry the last observed binding token. The server serializes complete submissions per pane, rechecks the binding, and executes `remote-input.py` over SSH. That script takes a per-pane lock, uses a unique paste buffer, and checks the live process/session before the paste and delayed Enter. Chat input is refused when Claude has exited. Starting Claude is a separate, explicit terminal action. Raw terminal mode remains an interactive shell, not a chat safety boundary. Failed submissions retain their original text and attachments; unconfirmed or partial delivery is never automatically retried.
+
+`DELETE /api/sessions` hides the selected **node-scoped** record in SQLite. It preserves remote JSONL and running processes. Closing a tab (`DELETE /api/tabs`) is a separate action that terminates its exact tmux window; the close button states this behavior. Rename and title overrides are node-scoped too.
+
+File writes validate both path boundaries and resolved symlinks inside the selected node's mirror. File-tree uploads are limited to 10 MB, committed atomically, and return 409 for existing names until overwrite is confirmed. Chat attachments retain their separate 50 MB streaming upload path directly to the node. A local upload response does not imply remote delivery: inserting a tree file calls `POST /api/file-reference`, which verifies the remote file's SHA-256 before returning its **remote** path. Directory checks confirm existence, not synchronization of every child. File list and preview requests discard superseded responses after switching projects.
+
+Run `npm test` for isolated Node/HTTP/browser-state and Python process-binding/input regressions. Tests use temporary data and mocked remote processes; they never submit prompts to a real Claude account. `bash scripts/smoke-test.sh` uses separate ports and skips optional system services.
+
 ## 5. MCP server and watchdog
 
-`mcp-server/server.js --http` speaks MCP (JSON-RPC 2.0) on `POST /mcp` (also SSE: `GET /sse` + `POST /messages`). The `?node=<id>` query parameter tells it which node is calling so remote paths (`<remoteWorkDir>/foo`) are translated to that node's local mirror. Other endpoints: `/health`, `/system-status` (JSON for the status bar), `POST /system-heal`, `/viewer` (3D viewer), `/work/*` (read-only files).
+`mcp-server/server.js --http` speaks MCP (JSON-RPC 2.0) on `POST /mcp` (also SSE: `GET /sse` + `POST /messages`). The `?node=<id>` query parameter is scoped to each asynchronous request so concurrent calls cannot switch another call's node; remote paths (`<remoteWorkDir>/foo`) are translated to that node's local mirror. Other endpoints: `/health`, `/system-status` (JSON for the status bar), `POST /system-heal`, `/viewer` (3D viewer), `/work/*` (read-only files).
 
 Every 5 s the **watchdog**:
 
@@ -111,8 +123,20 @@ Every 5 s the **watchdog**:
 
 ## 6. Security boundaries
 
-See [SECURITY.md](SECURITY.md). In short: both HTTP servers listen on loopback only, validate `Host`/`Origin`, `/mcp` needs a bearer token, and the tunnel is the only path from a server to your Mac.
+See [SECURITY.md](SECURITY.md). In short: both HTTP servers listen on loopback only, validate `Host`/`Origin`, MCP/control endpoints need a bearer token, and the tunnel is the only path from a server to your local client.
 
 ## 7. Process model
 
 `scripts/start.sh` launches `mcp-server` and `workbench` as detached processes (new session via `setsid`), writes pid files to `$TAKT_HOME/run/` and logs to `$TAKT_HOME/logs/`. The workbench also supervises the MCP server (restarts it if `/system-status` stops answering).
+
+### Transcript acknowledgment
+
+A successful terminal write is distinct from a confirmed transcript record. Pending messages match the same conversation's user records, keeping attachment paths and ignoring only Claude Code's standalone `pasted_content` wrappers and whitespace. Existing record IDs and older timestamps cannot acknowledge a new attempt. Every poll reconciles loaded rows, including records received while the send request was in flight. Idle time alone never marks delivery as failed or retries it; a delayed record gets a neutral unconfirmed notice and manual recovery. Explicit transport failures retain the recoverable text and attachments.
+
+### Live execution card
+
+The conversation execution card displays a generic working state and, when present, the duration from Claude's active spinner. Terminal screen tails are not turn-scoped replies or a thinking transcript: they remain available only in a collapsed, labeled terminal-details disclosure. Details close on tab/session/transcript/turn changes and after work finishes. Conversation replies and tool calls continue to come from the bound session's JSONL records. This presentation does not change sent prompts or remote task control.
+
+### Next-step suggestions
+
+Claude Code's dim next-prompt text exists in its terminal screen, not its JSONL reply history. The bound pane's styled input row may supply an idle-only suggestion to the conversation composer. It remains placeholder text until the user clicks the fill button or presses Tab; acceptance only edits the draft, never submits it. Typed text, selected attachments, active sends, pending messages, stale connections and binding errors suppress suggestions. Normal input rows and built-in placeholder hints are excluded from screen parsing.

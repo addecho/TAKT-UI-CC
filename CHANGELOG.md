@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Windows desktop and project sync
+
+- Add a Windows 11 x64 Electron desktop with NSIS/portable packages and a bundled Node/ConPTY runtime.
+- Add project-level Syncthing mappings, native directory selection and removal that preserves files on both peers.
+- Isolate Windows terminal workers; manage SSH reverse tunnels with owned children and reconnect/cleanup.
+- Add portable workspace mapping and Windows MCP tools; require MCP bearer authentication and strict Origin checks.
+- Add Windows/Linux CI, platform tests, real SSH forwarding tests and backend/desktop smoke checks.
+- This contribution omits the upstream host-specific remote-desktop feature; macOS desktop regression validation is pending.
+
 ## Unreleased — layout cleanup + DockTerm rework
 
 **Layout**
@@ -44,6 +53,9 @@
 - Attachments upload into the folder the Claude process actually runs in (falls back to the tab's folder), so Claude can read them without a permission prompt.
 - Tag and ⋯ menus open at the top level of the page; menus from the sidebar stay inside the sidebar, and any dialog (incl. appearance settings) or menu that overlaps the macOS app's native terminal hides it while open — HTML can't be drawn over that native view.
 - Machines in the sidebar (filter chips, machine headers) use a small server icon with a status dot instead of a plain dot, so they no longer look like project tags.
+
+**DockTerm: prompt suggestions**
+- Claude Code's prompt suggestion (the grey "what you'd type next" in the terminal's input box) shows up in the conversation view as the composer's placeholder with a `Tab 填入` badge: Tab (or a click on the badge) fills it in, Enter sends it as usual. It is read from the input row of the visible tmux pane (Claude Code keeps it only on screen), only while Claude waits for input; Claude Code's own `Try "…"` / queue hints are not taken for suggestions, and a sent suggestion never reappears.
 
 **Security**
 - Restored the documented Host/Origin guard (HTTP + WebSocket) that went missing in `efd9650`: web pages can no longer drive the workbench API or type into terminals.

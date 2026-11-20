@@ -1,5 +1,6 @@
 node_modules/
 build/
+dist/
 desktop/.build/
 desktop/.swiftpm/
 .DS_Store
@@ -12,3 +13,5 @@ desktop/.swiftpm/
 *.sqlite-shm
 *.sqlite-wal
 mcp-token
+__pycache__/
+*.pyc
